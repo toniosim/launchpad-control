@@ -1,0 +1,2 @@
+[console_scripts]
+launchpad-control = launchpad_control.app:main

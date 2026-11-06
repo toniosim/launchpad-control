@@ -12,7 +12,6 @@ Original goals from Tonio are marked ⭐. Rough priority: **P1** = build first, 
   - Color-coded categories; edge buttons page through banks
   - Pad pulses while its clip is playing
   - Stop-all button
-- **P2 Push-to-talk** pad (hold = unmuted)
 - **P2 Output device switching**: one pad per device (headphones, speakers, HDMI), lit = active
 - **P3 Live voice effects**: toggle PipeWire filter chains (pitch shift, reverb, radio/walkie-talkie)
 
@@ -37,7 +36,6 @@ Original goals from Tonio are marked ⭐. Rough priority: **P1** = build first, 
 ## Just for fun
 - **P3 Ambient/idle mode**: audio visualizer from system output, clock, Conway's Game of Life
 - **P3 V-Sonas on the grid**: pet mood/hunger as colors, tap to feed, tiny 8×8 minigames
-- **P3** Use it as an actual instrument now and then
 
 ## Infrastructure (not features, but needed)
 - Edge-button CC map (`docs/BUTTON_MAP.md`)

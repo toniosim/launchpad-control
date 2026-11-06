@@ -1,0 +1,8 @@
+README.md
+pyproject.toml
+src/launchpad_control.egg-info/PKG-INFO
+src/launchpad_control.egg-info/SOURCES.txt
+src/launchpad_control.egg-info/dependency_links.txt
+src/launchpad_control.egg-info/entry_points.txt
+src/launchpad_control.egg-info/requires.txt
+src/launchpad_control.egg-info/top_level.txt

@@ -7,15 +7,17 @@ Turns the 8×8 RGB pad grid into a control surface for the desktop: per-app volu
 ## Status
 
 - ✅ `scripts/lp_hello.py` works on hardware: enters Programmer mode, sets RGB per pad, lights pads on press (velocity → brightness), logs all incoming MIDI, restores Live mode on exit.
-- ⏭️ Next: map the edge buttons (CCs), then build the first real feature (mic mute with LED synced to state).
+- ✅ **Mic mute** (pad 81, top-left): toggles system mic mute; red = muted, dim green = live. The LED follows the real PipeWire state, including mutes from elsewhere.
+- ⏭️ Next: map the edge buttons (CCs), page system, volume faders.
 
 ## Quick start
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate
-pip install mido python-rtmidi
-python scripts/lp_hello.py
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/launchpad-control        # -v logs every event; Ctrl+C restores the device
+.venv/bin/pytest                   # unit tests, no hardware needed
+.venv/bin/python scripts/lp_hello.py   # hardware smoke test
 ```
 
 ## Docs
