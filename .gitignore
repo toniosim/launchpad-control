@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+sounds/*.wav
+sounds/*.mp3
+sounds/*.ogg
