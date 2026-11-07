@@ -12,6 +12,7 @@ Turns the 8×8 RGB pad grid into a control surface for the desktop: per-app volu
 - ✅ **Active-app fader** (column 4, cyan): controls whatever else is playing (e.g. a game): the newest audio stream not claimed by another fader, skipping notification sounds, paused streams and an ignore list. The log says which app it's controlling.
 - All LEDs follow the real PipeWire state, including changes made elsewhere (keyboard, panel, pavucontrol).
 - ✅ **Config file**: layout, colours and app matching live in TOML (see below), reloaded live.
+- ✅ **Runs in the background** as a systemd user service, survives unplug/replug, one-command updates (see below).
 - ⏭️ Next: map the edge buttons (CCs), page system.
 
 ## Quick start
@@ -23,6 +24,30 @@ python3 -m venv .venv
 .venv/bin/pytest                   # unit tests, no hardware needed
 .venv/bin/python scripts/lp_hello.py   # hardware smoke test
 ```
+
+## Running in the background
+
+A systemd **user** service starts the app at login. It waits for the Launchpad if it isn't
+plugged in, and recovers if it's unplugged and replugged.
+
+```bash
+scripts/install-service.sh   # one-time: install, enable at login, start (also links lpctl into ~/.local/bin)
+lpctl status                 # status | start | stop | restart | enable | disable | logs | update | dev
+lpctl stop                   # stop now; the pad is cleared and returned to Live mode
+lpctl disable                # stop now and don't start at login
+lpctl logs                   # follow the journal
+lpctl update                 # after changing code: refresh deps if needed, run tests, restart
+lpctl dev                    # run in the foreground with -v; the service resumes when you quit
+```
+
+The service runs from this checkout (editable install), so editing code and running `lpctl update`
+is the whole deploy. If the tests or config check fail, the running service is left untouched. If
+you stopped the service on purpose, `update` won't start it. Config edits don't need an update:
+they reload within a second. `scripts/install-service.sh --uninstall` removes everything.
+
+A config error at startup exits with code 2, which the unit treats as "don't retry"; check
+`lpctl logs`. Don't run a second copy by hand while the service is up (both would act on every
+press); use `lpctl dev` instead.
 
 ## Configuration
 

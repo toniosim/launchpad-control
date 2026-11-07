@@ -1,0 +1,20 @@
+# Template: scripts/install-service.sh substitutes @REPO@ and installs this to
+# ~/.config/systemd/user/launchpad-control.service
+[Unit]
+Description=Launchpad Pro MK3 control surface
+After=pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire.service pipewire-pulse.service wireplumber.service
+
+[Service]
+Type=simple
+ExecStart=@REPO@/.venv/bin/launchpad-control
+Environment=PYTHONUNBUFFERED=1
+# SIGTERM is a clean exit (code 0): the pad is cleared and returned to Live mode.
+TimeoutStopSec=5
+# Crash -> restart. A deliberate stop and a config error (exit 2) are not retried.
+Restart=on-failure
+RestartSec=3
+RestartPreventExitStatus=2
+
+[Install]
+WantedBy=default.target

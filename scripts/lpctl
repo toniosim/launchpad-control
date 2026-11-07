@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Everyday control of the launchpad-control service.
+set -euo pipefail
+
+REPO="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+UNIT=launchpad-control.service
+sc() { systemctl --user "$@"; }
+
+case "${1:-status}" in
+  status)  sc status "$UNIT" --no-pager ;;
+  start)   sc start "$UNIT" ;;
+  stop)    sc stop "$UNIT" ;;          # restores the pad; comes back at next login
+  restart) sc restart "$UNIT" ;;
+  enable)  sc enable --now "$UNIT" ;;  # also start at login
+  disable) sc disable --now "$UNIT" ;; # stop now and don't start at login
+  logs)    shift; exec journalctl --user -u "$UNIT" -f -n 50 "$@" ;;
+  update)  exec "$REPO/scripts/update.sh" ;;
+  dev)     # run in the foreground with -v; the service resumes afterwards
+    was_active=0; sc is-active --quiet "$UNIT" && was_active=1
+    sc stop "$UNIT"
+    [ "$was_active" = 1 ] && trap 'sc start "$UNIT"' EXIT
+    "$REPO/.venv/bin/launchpad-control" -v ;;
+  *) echo "usage: lpctl {status|start|stop|restart|enable|disable|logs|update|dev}" >&2; exit 2 ;;
+esac

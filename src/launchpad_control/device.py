@@ -43,6 +43,15 @@ def find_port(names: list[str]) -> str:
     raise LookupError(f"Launchpad Pro MK3 not found. Ports seen: {names}")
 
 
+def launchpad_present() -> bool:
+    """True while the Launchpad's MIDI port is enumerated (used to spot unplug/replug)."""
+    try:
+        find_port(mido.get_input_names())
+        return True
+    except LookupError:
+        return False
+
+
 def parse_message(msg: mido.Message) -> Event | None:
     """Translate a raw MIDI message into an app event. Returns None for anything ignored."""
     if msg.type == "note_on":
@@ -108,18 +117,30 @@ class LaunchpadDevice:
                 self._lit.add(i)
 
     def close(self) -> None:
-        """Restore the device: clear every LED we lit, return to Live mode."""
+        """Restore the device: clear every LED we lit, return to Live mode.
+
+        If the device was unplugged, the restore fails; that is logged, not raised.
+        """
         if self._in is not None:
-            self._in.close()
+            try:
+                self._in.close()
+            except Exception:
+                log.debug("Closing the input port failed", exc_info=True)
             self._in = None
         if self._out is not None:
             try:
                 self.set_leds([(i, 0, 0, 0) for i in sorted(self._lit)])
                 time.sleep(0.05)
                 self._sysex(0x0E, 0x00)  # Live mode
+            except Exception as e:
+                log.warning("Could not restore the Launchpad (unplugged?): %s", e)
             finally:
-                self._out.close()
+                try:
+                    self._out.close()
+                except Exception:
+                    log.debug("Closing the output port failed", exc_info=True)
                 self._out = None
+                self._lit.clear()
 
     def _sysex(self, *data: int) -> None:
         assert self._out is not None

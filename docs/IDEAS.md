@@ -42,6 +42,6 @@ Original goals from Tonio are marked ⭐. Rough priority: **P1** = build first, 
 - Page/mode system on edge buttons
 - ~~Config file for mappings~~ done: TOML, `~/.config/launchpad-control/config.toml`, live reload
 - Frame buffer + diffed batched SysEx
-- Hot-plug reconnect
-- systemd user service
+- ~~Hot-plug reconnect~~ done: `app.serve` waits for the device, repaints from carried state on replug
+- ~~systemd user service~~ done: `systemd/`, `scripts/install-service.sh`, `scripts/lpctl`, `scripts/update.sh`
 - Fake device for tests without hardware

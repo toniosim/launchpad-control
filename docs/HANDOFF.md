@@ -87,7 +87,7 @@ LED indices always use Programmer-mode numbering. While in Programmer mode, the 
 | Discord | Mute/deafen via system mic mute (above) or Discord keybinds sent through uinput | Discord's global keybinds are unreliable under Wayland, and its RPC voice-control scopes are restricted. Decide approach later (open question) |
 | OBS | obs-websocket (built into OBS 28+) | scene switch, record/stream state for LEDs |
 | Home server / Home Assistant | HTTP APIs (HA REST/WebSocket, container health endpoints) | status grid + actions |
-| Running in background | systemd **user** service | handle device unplug/replug with reconnect loop |
+| Running in background | systemd **user** service (done: `systemd/launchpad-control.service` template, installed by `scripts/install-service.sh`) | reconnect loop is `app.serve`; polls `launchpad_present()` every 2s since rtmidi gives no unplug callback. Exit code 2 (config error) is not restarted |
 
 ## Proposed architecture
 

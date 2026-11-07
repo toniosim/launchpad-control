@@ -7,8 +7,9 @@ import queue
 import signal
 import sys
 import time
+from contextlib import ExitStack
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, ContextManager, Protocol
 
 from . import config, grid
 from .config import ConfigError, Layout
@@ -19,6 +20,7 @@ from .integrations.pipewire import AudioState
 log = logging.getLogger(__name__)
 
 CONFIG_POLL_S = 1.0
+DEVICE_POLL_S = 2.0  # how often to check the Launchpad is still (or again) plugged in
 
 
 class AudioControl(Protocol):
@@ -123,7 +125,7 @@ class ConfigWatcher:
 
 
 def run(config_path: Path | None) -> None:
-    from .device import LaunchpadDevice
+    from .device import LaunchpadDevice, launchpad_present
     from .integrations.pipewire import PipeWire
 
     watcher = ConfigWatcher(config_path)
@@ -138,28 +140,88 @@ def run(config_path: Path | None) -> None:
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, _sigterm)
 
-    with LaunchpadDevice() as dev:
-        app = App(dev, audio, layout)
-        dev.set_event_handler(events.put)
-        audio.watch(lambda s: events.put(AudioChanged(s)))  # also sends the initial state
+    audio.watch(lambda s: events.put(AudioChanged(s)))  # also sends the initial state
+    log.info("Running. Ctrl+C to quit.")
+    try:
+        serve(watcher, layout, audio, events, LaunchpadDevice, launchpad_present)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        audio.stop()
 
-        log.info("Running. Ctrl+C to quit.")
-        next_config_check = time.monotonic() + CONFIG_POLL_S
+
+def serve(watcher: ConfigWatcher, layout: Layout, audio, events: "queue.Queue[Event]",
+          open_device: Callable[[], ContextManager[Device]],
+          present: Callable[[], bool]) -> None:
+    """Run until interrupted, surviving the Launchpad being absent, unplugged or replugged.
+
+    The audio state and layout carry over between device sessions, so a replugged
+    Launchpad is repainted from the current state straight away.
+    """
+    state = AudioState()
+    waiting_logged = False
+    while True:
+        stack = ExitStack()
         try:
-            while True:
-                try:
-                    event = events.get(timeout=CONFIG_POLL_S)
-                    log.debug("%s", event)
-                    app.step(event)
-                except queue.Empty:
-                    pass
-                if time.monotonic() >= next_config_check:
-                    next_config_check = time.monotonic() + CONFIG_POLL_S
-                    _maybe_reload(watcher, app, audio)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            audio.stop()
+            if not present():
+                raise LookupError("not connected")
+            dev = stack.enter_context(open_device())
+        except Exception as e:
+            if not waiting_logged:
+                log.info("Waiting for the Launchpad (%s)", e)
+                waiting_logged = True
+            state = _idle(events, state)
+            continue
+        waiting_logged = False
+        with stack:
+            log.info("Launchpad connected")
+            app = App(dev, audio, layout)
+            app.state = state
+            dev.set_event_handler(events.put)
+            try:
+                app.refresh()
+                _session(app, watcher, audio, events, present)
+            finally:
+                layout, state = app.layout, app.state
+
+
+def _idle(events: "queue.Queue[Event]", state: AudioState) -> AudioState:
+    """Wait for the device to show up, still tracking audio state so the queue can't grow."""
+    try:
+        event = events.get(timeout=DEVICE_POLL_S)
+    except queue.Empty:
+        return state
+    return event.state if isinstance(event, AudioChanged) else state
+
+
+def _session(app: App, watcher: ConfigWatcher, audio, events: "queue.Queue[Event]",
+             present: Callable[[], bool]) -> None:
+    """Handle events until the device disappears. Returns on disconnect; KeyboardInterrupt exits."""
+    now = time.monotonic()
+    next_config = now + CONFIG_POLL_S
+    next_present = now + DEVICE_POLL_S
+    while True:
+        try:
+            try:
+                event = events.get(timeout=CONFIG_POLL_S)
+                log.debug("%s", event)
+                app.step(event)
+            except queue.Empty:
+                pass
+            now = time.monotonic()
+            if now >= next_present:
+                next_present = now + DEVICE_POLL_S
+                if not present():
+                    log.warning("Launchpad disconnected")
+                    return
+            if now >= next_config:
+                next_config = now + CONFIG_POLL_S
+                _maybe_reload(watcher, app, audio)
+        except Exception:
+            if present():
+                raise  # a real bug, not an unplug
+            log.warning("Launchpad disconnected")
+            return
 
 
 def _maybe_reload(watcher: ConfigWatcher, app: App, audio) -> None:
@@ -218,7 +280,8 @@ def main() -> None:
             return
         run(args.config)
     except ConfigError as e:
-        sys.exit(f"Config error: {e}")
+        print(f"Config error: {e}", file=sys.stderr)
+        sys.exit(2)  # the systemd unit does not restart on 2
 
 
 if __name__ == "__main__":
