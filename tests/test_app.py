@@ -1,10 +1,16 @@
 import pytest
 
 from launchpad_control import grid
-from launchpad_control.app import APP_FADERS, MASTER_FADER, MIC_MUTE_PAD, App
+from launchpad_control import config
+from launchpad_control.app import App
 from launchpad_control.events import AudioChanged
 from launchpad_control.fake_device import FakeDevice
 from launchpad_control.integrations.pipewire import AudioState
+
+LAYOUT = config.load(None)  # the packaged default layout
+MIC_MUTE_PAD = LAYOUT.mic_mute_pad
+MASTER_FADER = LAYOUT.master
+APP_FADERS = LAYOUT.apps
 
 
 class FakeAudio:
@@ -20,10 +26,13 @@ class FakeAudio:
     def set_app_volume(self, name, level):
         self.calls.append(("app", name, level))
 
+    def set_active_volume(self, level):
+        self.calls.append(("active", level))
+
 
 def make_app():
     dev, audio = FakeDevice(), FakeAudio()
-    app = App(dev, audio)
+    app = App(dev, audio, LAYOUT)
     dev.set_event_handler(app.step)
     return app, dev, audio
 
@@ -44,7 +53,7 @@ def test_only_dim_placeholders_until_state_known():
     app.refresh()
     assert MIC_MUTE_PAD not in dev.leds
     # each fader shows just its dim bottom pad
-    assert set(dev.leds) == {grid.idx(1, f.col) for f in [MASTER_FADER] + [a.fader for a in APP_FADERS]}
+    assert set(dev.leds) == {grid.idx(1, f.col) for f in LAYOUT.faders()}
 
 
 def test_mute_press_toggles_but_does_not_change_led():
@@ -121,7 +130,37 @@ def test_app_colours():
     assert col_leds(dev, APP_FADERS[1].fader.col) == [grid.PURPLE] * 8
 
 
-def test_layout_does_not_overlap():
-    cols = [MASTER_FADER.col] + [a.fader.col for a in APP_FADERS]
-    assert len(set(cols)) == len(cols)
-    assert not any(f.contains(MIC_MUTE_PAD) for f in [MASTER_FADER] + [a.fader for a in APP_FADERS])
+def test_default_layout_matches_spec():
+    assert MIC_MUTE_PAD == 18
+    assert (MASTER_FADER.col, MASTER_FADER.color) == (1, grid.GREEN)
+    assert [(a.name, a.fader.col, a.fader.color) for a in APP_FADERS] == [
+        ("firefox", 2, grid.ORANGE), ("discord", 3, grid.PURPLE)]
+    assert LAYOUT.active_app.fader.col == 4
+
+
+def test_layout_swap_takes_effect():
+    app, dev, audio = make_app()
+    dev.emit(state(mic_muted=True))
+    app.layout = config.parse({"mic_mute": {"pad": [8, 8]}})
+    app.refresh()
+    assert dev.leds == {88: grid.RED}  # faders gone, mute moved
+    dev.press(88)
+    assert audio.calls == [("mute",)]
+
+
+# ---- active app ----
+
+def test_active_app_fader():
+    app, dev, audio = make_app()
+    col = LAYOUT.active_app.fader.col
+    dev.emit(state(active_app="Game", active_volume=0.5))
+    assert col_leds(dev, col)[:4] == [LAYOUT.active_app.fader.color] * 4
+    dev.press(grid.idx(8, col))
+    assert audio.calls == [("active", 1.0)]
+
+
+def test_active_app_press_ignored_when_nothing_playing():
+    app, dev, audio = make_app()
+    dev.emit(state())
+    dev.press(grid.idx(8, LAYOUT.active_app.fader.col))
+    assert audio.calls == []

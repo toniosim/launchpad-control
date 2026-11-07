@@ -40,7 +40,7 @@ Original goals from Tonio are marked ⭐. Rough priority: **P1** = build first, 
 ## Infrastructure (not features, but needed)
 - Edge-button CC map (`docs/BUTTON_MAP.md`)
 - Page/mode system on edge buttons
-- YAML config for mappings
+- ~~Config file for mappings~~ done: TOML, `~/.config/launchpad-control/config.toml`, live reload
 - Frame buffer + diffed batched SysEx
 - Hot-plug reconnect
 - systemd user service

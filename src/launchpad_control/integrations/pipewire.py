@@ -23,6 +23,8 @@ _EVENT_RE = re.compile(r"Event '(\w+)' on ([\w-]+)")
 _RELEVANT = {"source", "sink", "sink-input", "server"}
 # Stream properties checked against an app's match patterns (case-insensitive substring).
 _MATCH_PROPS = ("application.name", "application.process.binary", "application.id", "node.name")
+# Short system sounds (notifications, clicks) never count as the "active app".
+_EVENT_ROLES = {"event", "notification"}
 _DEBOUNCE_S = 0.03
 _FULL_VOLUME = 65536  # PulseAudio volume units for 100%
 
@@ -41,6 +43,13 @@ class SinkInput:
     index: int
     level: float  # 1.0 = 100%
     props: Mapping[str, str] = field(default_factory=dict)
+    corked: bool = False  # paused
+
+    @property
+    def app_label(self) -> str:
+        return str(self.props.get("application.name")
+                   or self.props.get("application.process.binary")
+                   or self.props.get("node.name") or f"stream {self.index}")
 
     def matches(self, patterns: Sequence[str]) -> bool:
         values = [str(self.props.get(k, "")).lower() for k in _MATCH_PROPS]
@@ -53,17 +62,27 @@ class AudioState:
     mic_muted: bool | None = None
     master_volume: float | None = None
     app_volumes: Mapping[str, float | None] = field(default_factory=dict)
+    active_app: str | None = None        # what the active-app fader is controlling
+    active_volume: float | None = None
 
 
 class PipeWire:
     def __init__(self, apps: Mapping[str, Sequence[str]] | None = None,
-                 run: Runner = _run) -> None:
-        """apps: app name -> match patterns, e.g. {"firefox": ["firefox"]}."""
-        self.apps = dict(apps or {})
+                 active_ignore: Sequence[str] | None = None, run: Runner = _run) -> None:
+        """apps: app name -> match patterns, e.g. {"firefox": ["firefox"]}.
+        active_ignore: patterns never picked as the active app; None disables active-app tracking.
+        """
         self._run = run
+        self.set_targets(apps, active_ignore)
         self._stop = threading.Event()
         self._dirty = threading.Event()
         self._proc: subprocess.Popen[str] | None = None
+
+    def set_targets(self, apps: Mapping[str, Sequence[str]] | None,
+                    active_ignore: Sequence[str] | None) -> None:
+        """Change which apps are tracked (e.g. after a config reload)."""
+        self.apps = dict(apps or {})
+        self.active_ignore = None if active_ignore is None else tuple(active_ignore)
 
     # ---- mic mute -------------------------------------------------------
     def is_mic_muted(self) -> bool | None:
@@ -116,9 +135,45 @@ class PipeWire:
             if s.matches(patterns):
                 self._try(["pactl", "set-sink-input-volume", str(s.index), pct])
 
+    # ---- active app (whatever else is playing, e.g. a game) ------------
+    def active_streams(self, streams: list[SinkInput]) -> list[SinkInput]:
+        """Streams of the newest playing app not claimed by an app fader or ignored.
+
+        An app can have several streams (e.g. a game's music and effects); all of the
+        chosen app's streams are returned.
+        """
+        if self.active_ignore is None:
+            return []
+        claimed = [p for patterns in self.apps.values() for p in patterns]
+        candidates = [
+            s for s in streams
+            if not s.corked
+            and not s.matches(claimed)
+            and not s.matches(self.active_ignore)
+            and str(s.props.get("media.role", "")).lower() not in _EVENT_ROLES
+        ]
+        if not candidates:
+            return []
+        newest = max(candidates, key=lambda s: s.index)
+        return [s for s in candidates if s.app_label == newest.app_label]
+
+    def set_active_volume(self, level: float) -> None:
+        pct = f"{round(_clamp01(level) * 100)}%"
+        for s in self.active_streams(self.sink_inputs() or []):
+            self._try(["pactl", "set-sink-input-volume", str(s.index), pct])
+
     # ---- snapshot + watching --------------------------------------------
     def snapshot(self) -> AudioState:
-        return AudioState(self.is_mic_muted(), self.master_volume(), self.app_volumes())
+        streams = self.sink_inputs()
+        active = self.active_streams(streams or [])
+        return AudioState(
+            mic_muted=self.is_mic_muted(),
+            master_volume=self.master_volume(),
+            app_volumes=self.app_volumes(streams or []) if streams is not None
+            else {name: None for name in self.apps},
+            active_app=active[0].app_label if active else None,
+            active_volume=max(s.level for s in active) if active else None,
+        )
 
     def watch(self, on_change: Callable[[AudioState], None]) -> None:
         """Call on_change(snapshot) at start and whenever audio state might have changed.
@@ -129,6 +184,10 @@ class PipeWire:
         threading.Thread(target=self._read_events, daemon=True, name="pw-events").start()
         threading.Thread(target=self._refresh_loop, args=(on_change,), daemon=True,
                          name="pw-refresh").start()
+
+    def request_refresh(self) -> None:
+        """Ask the watcher to send a fresh snapshot (e.g. after the app list changed)."""
+        self._dirty.set()
 
     def stop(self) -> None:
         self._stop.set()
@@ -173,7 +232,8 @@ def parse_sink_inputs(json_text: str) -> list[SinkInput]:
     for s in json.loads(json_text):
         channels = [ch["value"] for ch in s["volume"].values()]
         level = max(channels) / _FULL_VOLUME if channels else 0.0
-        streams.append(SinkInput(int(s["index"]), level, s.get("properties", {})))
+        streams.append(SinkInput(int(s["index"]), level, s.get("properties", {}),
+                                 bool(s.get("corked", False))))
     return streams
 
 

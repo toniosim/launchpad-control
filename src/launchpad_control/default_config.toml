@@ -1,0 +1,40 @@
+# launchpad-control layout.
+#
+# Copy to ~/.config/launchpad-control/config.toml to customise
+# (or run: launchpad-control --init-config). Changes are picked up while running.
+#
+# Grid positions: rows and columns 1-8, row 1 = bottom, column 1 = left.
+# Colours: a name (red, green, blue, orange, purple, yellow, cyan, pink, white)
+#          or [r, g, b] with each value 0-127.
+
+# Pad that toggles system mic mute. Red = muted, dim green = live.
+[mic_mute]
+pad = [1, 8]            # [row, col] -> bottom-right
+
+# Master (default output) volume fader.
+[master]
+column = 1
+color = "green"
+
+# Per-app volume faders. `match` is checked (case-insensitive, substring)
+# against each audio stream's app name and program name.
+# Run `pactl list sink-inputs` while the app plays audio to see what to match.
+[[apps]]
+name = "firefox"
+match = ["firefox"]
+column = 2
+color = "orange"
+
+[[apps]]
+name = "discord"
+match = ["discord"]
+column = 3
+color = "purple"
+
+# "Whatever else is playing" fader, e.g. for games. Controls the newest audio stream
+# that isn't claimed by an [[apps]] fader above and doesn't match `ignore`.
+# Notification sounds and paused streams are skipped automatically.
+[active_app]
+column = 4
+color = "cyan"
+ignore = ["speech-dispatcher"]   # always-present system streams

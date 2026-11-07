@@ -100,3 +100,62 @@ def test_relevant_events():
     assert not is_relevant_event("Event 'new' on client #4485")
     assert not is_relevant_event("Event 'change' on card #4341")
     assert not is_relevant_event("Event 'change' on source-output #12")
+
+
+# ---- active app ----
+
+def active_fixture(*extra):
+    base = [
+        stream(252, 100, **{"application.name": "speech-dispatcher-dummy"}),
+        stream(4477, 40, **{"application.name": "Firefox", "application.process.binary": "firefox-bin"}),
+        stream(5000, 25, **{"application.name": "WEBRTC VoiceEngine",
+                            "application.process.binary": "Discord"}),
+    ]
+    return json.dumps(base + list(extra))
+
+
+def active_pw(json_text, ignore=("speech-dispatcher",)):
+    run = FakeRunner(list=json_text)
+    return PipeWire(APPS, active_ignore=list(ignore), run=run), run
+
+
+def test_no_active_app_when_only_claimed_and_ignored_streams():
+    pw, _ = active_pw(active_fixture())
+    s = pw.snapshot()
+    assert s.active_app is None and s.active_volume is None
+
+
+def test_game_becomes_active_app():
+    game = stream(6000, 80, **{"application.name": "Hollow Knight", "application.process.binary": "hollow_knight.x86_64"})
+    pw, _ = active_pw(active_fixture(game))
+    s = pw.snapshot()
+    assert s.active_app == "Hollow Knight"
+    assert abs(s.active_volume - 0.8) < 0.001
+    assert abs(s.app_volumes["firefox"] - 0.4) < 0.001  # app faders unaffected
+
+
+def test_newest_unclaimed_app_wins_and_all_its_streams_are_set():
+    older = stream(6000, 50, **{"application.name": "Spotify"})
+    game_music = stream(7000, 60, **{"application.name": "Game"})
+    game_sfx = stream(7001, 90, **{"application.name": "Game"})
+    pw, run = active_pw(active_fixture(older, game_music, game_sfx))
+    assert pw.snapshot().active_app == "Game"
+    pw.set_active_volume(0.25)
+    sets = [c for c in run.calls if "set-sink-input-volume" in c]
+    assert sets == [["pactl", "set-sink-input-volume", "7000", "25%"],
+                    ["pactl", "set-sink-input-volume", "7001", "25%"]]
+
+
+def test_notifications_and_paused_streams_skipped():
+    game = stream(6000, 80, **{"application.name": "Game"})
+    ding = stream(6001, 100, **{"application.name": "cosmic-notifications", "media.role": "event"})
+    paused = stream(6002, 100, **{"application.name": "VLC"})
+    paused["corked"] = True
+    pw, _ = active_pw(active_fixture(game, ding, paused))
+    assert pw.snapshot().active_app == "Game"
+
+
+def test_active_app_disabled_without_config():
+    game = stream(6000, 80, **{"application.name": "Game"})
+    pw = PipeWire(APPS, run=FakeRunner(list=active_fixture(game)))
+    assert pw.snapshot().active_app is None

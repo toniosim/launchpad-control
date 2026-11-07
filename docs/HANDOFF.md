@@ -102,9 +102,9 @@ launchpad-control/
 │   │   ├── soundboard.py
 │   │   ├── server.py
 │   │   └── macros.py
-│   └── integrations/    # pipewire.py, uinput.py, playerctl.py, obs.py, homeassistant.py
-├── config/
-│   └── config.yaml      # pad → action mappings, colors, sounds, endpoints
+│   ├── integrations/    # pipewire.py, uinput.py, playerctl.py, obs.py, homeassistant.py
+│   ├── config.py        # load + validate TOML layout
+│   └── default_config.toml  # packaged default (user copy: ~/.config/launchpad-control/config.toml)
 ├── sounds/              # soundboard clips (gitignored if large)
 ├── scripts/lp_hello.py  # hardware smoke test
 ├── systemd/launchpad-control.service
@@ -115,7 +115,7 @@ Key design decisions so far:
 - **Pages/modes** switched by edge buttons; each page is a plugin with `on_enter`, `on_pad(note, velocity)`, `on_button(cc, value)`, `on_pressure(note, value)`, `render() -> frame`.
 - **Frame buffer + diff**: pages render a full 8×8 (+ buttons) frame; the device layer sends only changed LEDs, batched into one SysEx (≤106 specs). Keeps meters and visualizers smooth.
 - **State-driven LEDs**: integrations publish state (mute, volume, service health); pages render from state, not from button history.
-- **Config-driven mappings** in YAML so adding a soundboard clip or macro doesn't need code changes.
+- **Config-driven mappings** in **TOML** (stdlib `tomllib`, no extra dependency; chosen over YAML). User file at `~/.config/launchpad-control/config.toml`, falling back to the packaged default; validated at startup with clear errors; reloaded live while running (an invalid edit is logged and the old layout kept).
 - Always restore the device (clear and return to Live mode) on exit.
 
 ## Open questions
