@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .integrations.pipewire import AudioState
+
 
 @dataclass(frozen=True)
 class PadPress:
@@ -29,8 +31,9 @@ class ButtonChange:
 
 
 @dataclass(frozen=True)
-class MicMuteChanged:
-    muted: bool
+class AudioChanged:
+    """A fresh snapshot of audio state from PipeWire."""
+    state: AudioState
 
 
-Event = PadPress | PadRelease | PadPressure | ButtonChange | MicMuteChanged
+Event = PadPress | PadRelease | PadPressure | ButtonChange | AudioChanged

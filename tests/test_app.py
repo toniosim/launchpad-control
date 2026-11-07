@@ -1,57 +1,127 @@
+import pytest
+
 from launchpad_control import grid
-from launchpad_control.app import MIC_MUTE_PAD, App
-from launchpad_control.events import MicMuteChanged
+from launchpad_control.app import APP_FADERS, MASTER_FADER, MIC_MUTE_PAD, App
+from launchpad_control.events import AudioChanged
 from launchpad_control.fake_device import FakeDevice
+from launchpad_control.integrations.pipewire import AudioState
 
 
-class FakeMic:
+class FakeAudio:
     def __init__(self):
-        self.toggles = 0
+        self.calls = []
 
-    def toggle(self):
-        self.toggles += 1
+    def toggle_mic_mute(self):
+        self.calls.append(("mute",))
+
+    def set_master_volume(self, level):
+        self.calls.append(("master", level))
+
+    def set_app_volume(self, name, level):
+        self.calls.append(("app", name, level))
 
 
 def make_app():
-    dev, mic = FakeDevice(), FakeMic()
-    app = App(dev, mic)
+    dev, audio = FakeDevice(), FakeAudio()
+    app = App(dev, audio)
     dev.set_event_handler(app.step)
-    return app, dev, mic
+    return app, dev, audio
 
 
-def test_pad_off_until_state_known():
+def state(**kw):
+    kw.setdefault("app_volumes", {"firefox": 0.5, "discord": None})
+    return AudioChanged(AudioState(**kw))
+
+
+def col_leds(dev, col):
+    return [dev.leds.get(grid.idx(r, col)) for r in range(1, 9)]
+
+
+# ---- mic mute ----
+
+def test_only_dim_placeholders_until_state_known():
     app, dev, _ = make_app()
     app.refresh()
-    assert dev.leds == {}
+    assert MIC_MUTE_PAD not in dev.leds
+    # each fader shows just its dim bottom pad
+    assert set(dev.leds) == {grid.idx(1, f.col) for f in [MASTER_FADER] + [a.fader for a in APP_FADERS]}
 
 
-def test_press_toggles_but_does_not_change_led():
-    app, dev, mic = make_app()
-    dev.emit(MicMuteChanged(False))
+def test_mute_press_toggles_but_does_not_change_led():
+    app, dev, audio = make_app()
+    dev.emit(state(mic_muted=False))
     dev.press(MIC_MUTE_PAD)
-    assert mic.toggles == 1
-    # LED still shows the last confirmed state until PipeWire reports back
+    assert audio.calls == [("mute",)]
     assert dev.leds[MIC_MUTE_PAD] == grid.DIM_GREEN
 
 
-def test_led_follows_external_mute():
-    app, dev, mic = make_app()
-    dev.emit(MicMuteChanged(True))  # e.g. muted from the keyboard
+def test_mute_led_follows_external_change():
+    app, dev, audio = make_app()
+    dev.emit(state(mic_muted=True))
     assert dev.leds[MIC_MUTE_PAD] == grid.RED
-    assert mic.toggles == 0
-    dev.emit(MicMuteChanged(False))
+    dev.emit(state(mic_muted=False))
     assert dev.leds[MIC_MUTE_PAD] == grid.DIM_GREEN
+    assert audio.calls == []
 
 
 def test_repeated_state_sends_nothing():
     app, dev, _ = make_app()
-    dev.emit(MicMuteChanged(True))
-    dev.emit(MicMuteChanged(True))
-    dev.emit(MicMuteChanged(True))
+    for _ in range(3):
+        dev.emit(state(mic_muted=True, master_volume=0.5))
     assert len(dev.sent) == 1
 
 
-def test_other_pads_ignored():
-    app, dev, mic = make_app()
-    dev.press(11)
-    assert mic.toggles == 0
+# ---- master volume ----
+
+def test_master_fader_shows_level():
+    app, dev, _ = make_app()
+    dev.emit(state(master_volume=0.75))
+    leds = col_leds(dev, MASTER_FADER.col)
+    assert leds[:6] == [grid.GREEN] * 6
+    assert all(c != grid.GREEN for c in leds[6:])
+
+
+def test_master_fader_press_sets_volume():
+    app, dev, audio = make_app()
+    dev.emit(state(master_volume=0.75))
+    dev.press(grid.idx(4, MASTER_FADER.col))
+    assert audio.calls == [("master", 0.5)]
+
+
+def test_master_follows_external_change():
+    app, dev, _ = make_app()
+    dev.emit(state(master_volume=1.0))
+    dev.emit(state(master_volume=0.25))
+    leds = col_leds(dev, MASTER_FADER.col)
+    assert leds[:2] == [grid.GREEN] * 2 and leds[2] != grid.GREEN
+
+
+# ---- per-app volume ----
+
+def test_app_fader_press_sets_app_volume():
+    app, dev, audio = make_app()
+    firefox = APP_FADERS[0]
+    dev.emit(state())
+    dev.press(grid.idx(8, firefox.fader.col))
+    assert audio.calls == [("app", "firefox", 1.0)]
+
+
+def test_app_without_stream_ignores_press():
+    app, dev, audio = make_app()
+    discord = APP_FADERS[1]
+    dev.emit(state())
+    dev.press(grid.idx(5, discord.fader.col))
+    assert audio.calls == []
+
+
+def test_app_colours():
+    app, dev, _ = make_app()
+    dev.emit(state(app_volumes={"firefox": 1.0, "discord": 1.0}))
+    assert col_leds(dev, APP_FADERS[0].fader.col) == [grid.ORANGE] * 8
+    assert col_leds(dev, APP_FADERS[1].fader.col) == [grid.PURPLE] * 8
+
+
+def test_layout_does_not_overlap():
+    cols = [MASTER_FADER.col] + [a.fader.col for a in APP_FADERS]
+    assert len(set(cols)) == len(cols)
+    assert not any(f.contains(MIC_MUTE_PAD) for f in [MASTER_FADER] + [a.fader for a in APP_FADERS])

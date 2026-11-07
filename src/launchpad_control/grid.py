@@ -6,7 +6,15 @@ LedSpec = tuple[int, int, int, int]  # (idx, r, g, b)
 
 OFF: RGB = (0, 0, 0)
 RED: RGB = (127, 0, 0)
+GREEN: RGB = (0, 127, 0)
 DIM_GREEN: RGB = (0, 20, 0)
+ORANGE: RGB = (127, 35, 0)
+PURPLE: RGB = (70, 0, 127)
+
+
+def scale(rgb: RGB, brightness: float) -> RGB:
+    """Dim a colour. Keeps at least 1 in any channel that was non-zero, so it stays visible."""
+    return tuple(max(1, round(c * brightness)) if c else 0 for c in rgb)  # type: ignore[return-value]
 
 
 def idx(row: int, col: int) -> int:

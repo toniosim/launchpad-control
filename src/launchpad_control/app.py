@@ -10,40 +10,77 @@ from typing import Protocol
 
 from . import grid
 from .device import Device
-from .events import Event, MicMuteChanged, PadPress
+from .events import AudioChanged, Event, PadPress
+from .integrations.pipewire import AudioState
+from .widgets import Fader
 
 log = logging.getLogger(__name__)
 
-MIC_MUTE_PAD = grid.idx(8, 1)  # top-left pad (81) until there's a config file
+
+# ---- Layout (hardcoded until there's a config file) -------------------------
+
+@dataclass(frozen=True)
+class AppFader:
+    name: str
+    patterns: tuple[str, ...]  # matched against the stream's app name / binary
+    fader: Fader
 
 
-class MicControl(Protocol):
-    def toggle(self) -> None: ...
+MIC_MUTE_PAD = grid.idx(1, 8)  # bottom-right
+MASTER_FADER = Fader(col=1, color=grid.GREEN)
+APP_FADERS = (
+    AppFader("firefox", ("firefox",), Fader(col=2, color=grid.ORANGE)),
+    AppFader("discord", ("discord",), Fader(col=3, color=grid.PURPLE)),
+)
 
 
-@dataclass
-class State:
-    mic_muted: bool | None = None  # None = unknown, pad stays off
+# ---- App ---------------------------------------------------------------------
+
+class AudioControl(Protocol):
+    def toggle_mic_mute(self) -> None: ...
+    def set_master_volume(self, level: float) -> None: ...
+    def set_app_volume(self, name: str, level: float) -> None: ...
 
 
 class App:
-    def __init__(self, device: Device, mic: MicControl) -> None:
+    def __init__(self, device: Device, audio: AudioControl) -> None:
         self.device = device
-        self.mic = mic
-        self.state = State()
+        self.audio = audio
+        self.state = AudioState()
         self._differ = grid.FrameDiffer()
 
     def handle(self, event: Event) -> None:
-        if isinstance(event, PadPress) and event.idx == MIC_MUTE_PAD:
-            # Don't touch the LED here: it changes when PipeWire reports the new state.
-            self.mic.toggle()
-        elif isinstance(event, MicMuteChanged):
-            self.state.mic_muted = event.muted
+        # Presses only act on the system. LEDs change when PipeWire reports the new state.
+        if isinstance(event, PadPress):
+            self._on_press(event.idx)
+        elif isinstance(event, AudioChanged):
+            self.state = event.state
+
+    def _on_press(self, idx: int) -> None:
+        if idx == MIC_MUTE_PAD:
+            self.audio.toggle_mic_mute()
+            return
+        if MASTER_FADER.contains(idx):
+            self.audio.set_master_volume(
+                MASTER_FADER.level_for_press(idx, self.state.master_volume))
+            return
+        for app in APP_FADERS:
+            if app.fader.contains(idx):
+                current = self.state.app_volumes.get(app.name)
+                if current is None:
+                    log.info("%s has no audio stream right now", app.name)
+                    return
+                self.audio.set_app_volume(app.name, app.fader.level_for_press(idx, current))
+                return
 
     def render(self) -> grid.Frame:
+        s = self.state
         frame: grid.Frame = {}
-        if self.state.mic_muted is not None:
-            frame[MIC_MUTE_PAD] = grid.RED if self.state.mic_muted else grid.DIM_GREEN
+        frame.update(MASTER_FADER.render(s.master_volume))
+        for app in APP_FADERS:
+            frame.update(app.fader.render(s.app_volumes.get(app.name)))
+        if s.mic_muted is not None:
+            frame[MIC_MUTE_PAD] = grid.RED if s.mic_muted else grid.DIM_GREEN
         return frame
 
     def refresh(self) -> None:
@@ -56,10 +93,10 @@ class App:
 
 def run() -> None:
     from .device import LaunchpadDevice
-    from .integrations.pipewire import MicMute
+    from .integrations.pipewire import PipeWire
 
     events: queue.Queue[Event] = queue.Queue()
-    mic = MicMute()
+    audio = PipeWire(apps={a.name: a.patterns for a in APP_FADERS})
 
     # systemd sends SIGTERM; treat it like Ctrl+C so the device gets restored.
     def _sigterm(*_: object) -> None:
@@ -67,15 +104,11 @@ def run() -> None:
     signal.signal(signal.SIGTERM, _sigterm)
 
     with LaunchpadDevice() as dev:
-        app = App(dev, mic)
+        app = App(dev, audio)
         dev.set_event_handler(events.put)
+        audio.watch(lambda s: events.put(AudioChanged(s)))  # also sends the initial state
 
-        muted = mic.is_muted()
-        if muted is not None:
-            app.step(MicMuteChanged(muted))
-        mic.watch(lambda m: events.put(MicMuteChanged(m)))
-
-        log.info("Running. Mic mute pad = %d. Ctrl+C to quit.", MIC_MUTE_PAD)
+        log.info("Running. Ctrl+C to quit.")
         try:
             while True:
                 try:
@@ -87,7 +120,7 @@ def run() -> None:
         except KeyboardInterrupt:
             pass
         finally:
-            mic.stop()
+            audio.stop()
 
 
 def main() -> None:
