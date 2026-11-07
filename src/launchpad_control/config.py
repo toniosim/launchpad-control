@@ -12,7 +12,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from . import grid
+from . import grid, idle
 from .grid import RGB
 from .widgets import Fader
 
@@ -57,12 +57,21 @@ class DiscordLayout:
 
 
 @dataclass(frozen=True)
+class IdleLayout:
+    """Screensaver: after `after` seconds without a press, play `mode` on the whole grid."""
+    after: float
+    mode: str = "life"
+    interval: float = 0.4  # seconds per animation frame
+
+
+@dataclass(frozen=True)
 class Layout:
     mic_mute_pad: int | None = None
     master: Fader | None = None
     apps: tuple[AppFader, ...] = ()
     active_app: ActiveAppFader | None = None
     discord: DiscordLayout | None = None
+    idle: IdleLayout | None = None
 
     def faders(self) -> list[Fader]:
         return (([self.master] if self.master else []) + [a.fader for a in self.apps]
@@ -111,7 +120,8 @@ def load(path: Path | None) -> Layout:
 # ---- parsing + validation ------------------------------------------------------
 
 def parse(data: dict[str, Any]) -> Layout:
-    _no_unknown_keys(data, {"mic_mute", "master", "apps", "active_app", "discord"}, "top level")
+    _no_unknown_keys(data, {"mic_mute", "master", "apps", "active_app", "discord", "idle"},
+                     "top level")
 
     mic_pad = None
     if "mic_mute" in data:
@@ -153,7 +163,11 @@ def parse(data: dict[str, Any]) -> Layout:
     if "discord" in data:
         discord = _discord(_table(data["discord"], "[discord]"))
 
-    layout = Layout(mic_pad, master, tuple(apps), active, discord)
+    idle_layout = None
+    if "idle" in data:
+        idle_layout = _idle(_table(data["idle"], "[idle]"))
+
+    layout = Layout(mic_pad, master, tuple(apps), active, discord, idle_layout)
     _check_overlaps(layout)
     return layout
 
@@ -180,6 +194,23 @@ def _discord(section: dict[str, Any]) -> DiscordLayout:
     deafen = (_pad(section["deafen_pad"], f"{where} deafen_pad")
               if "deafen_pad" in section else None)
     return DiscordLayout(client_id, mute, deafen)
+
+
+def _idle(section: dict[str, Any]) -> IdleLayout:
+    where = "[idle]"
+    _no_unknown_keys(section, {"after", "mode", "interval"}, where)
+    after = _seconds(_required(section, "after", where), f"{where} after")
+    mode = section.get("mode", IdleLayout.mode)
+    if mode not in idle.MODES:
+        raise ConfigError(f"{where}: unknown mode {mode!r} (known: {', '.join(idle.MODES)})")
+    interval = _seconds(section.get("interval", IdleLayout.interval), f"{where} interval")
+    return IdleLayout(after, mode, interval)
+
+
+def _seconds(value: Any, where: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise ConfigError(f"{where} must be a positive number of seconds, got {value!r}")
+    return float(value)
 
 
 def _check_overlaps(layout: Layout) -> None:

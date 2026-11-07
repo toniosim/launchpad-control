@@ -35,7 +35,7 @@ Original goals from Tonio are marked ⭐. Rough priority: **P1** = build first, 
 - **P3 Clipboard/snippet bank**: frequently used strings, commands, test data
 
 ## Just for fun
-- **P3 Ambient/idle mode**: audio visualizer from system output, clock, Conway's Game of Life
+- **P3 Ambient/idle mode**: ✅ Conway's Game of Life (`idle.py`, `[idle] mode = "life"`). Still to do: audio visualizer from system output, clock. New modes go in `idle.MODES`
 - **P3 V-Sonas on the grid**: pet mood/hunger as colors, tap to feed, tiny 8×8 minigames
 
 ## Infrastructure (not features, but needed)

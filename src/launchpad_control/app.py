@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import logging
 import queue
+import random
 import signal
 import sys
 import time
@@ -11,10 +12,10 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Callable, ContextManager, Protocol
 
-from . import config, grid
+from . import config, grid, idle
 from .config import ConfigError, Layout
 from .device import Device
-from .events import AudioChanged, DiscordChanged, Event, PadPress
+from .events import AudioChanged, ButtonChange, DiscordChanged, Event, PadPress
 from .integrations.discord import DiscordState
 from .integrations.pipewire import AudioState
 
@@ -40,20 +41,33 @@ class App:
     """Holds all state; outlives device sessions so a replugged Launchpad repaints at once."""
 
     def __init__(self, device: Device | None, audio: AudioControl, layout: Layout,
-                 discord: DiscordControl | None = None) -> None:
+                 discord: DiscordControl | None = None,
+                 clock: Callable[[], float] = time.monotonic,
+                 rng: random.Random | None = None) -> None:
         self.audio = audio
         self.discord = discord
         self.layout = layout
         self.state = AudioState()
         self.discord_state = DiscordState()
+        self.clock = clock
+        self.rng = rng or random.Random()
+        self.idle: idle.IdleMode | None = None  # the running idle animation, if any
         self.attach(device)
 
     def attach(self, device: Device | None) -> None:
         """Use a (new) device. Its LEDs start blank, so the next refresh sends everything."""
         self.device = device
         self._differ = grid.FrameDiffer()
+        self.idle = None
+        self._last_activity = self.clock()
 
     def handle(self, event: Event) -> None:
+        if isinstance(event, PadPress) or (isinstance(event, ButtonChange) and event.value):
+            self._last_activity = self.clock()
+            if self.idle is not None:
+                log.debug("Waking from idle mode")
+                self.idle = None
+                return  # the waking press is swallowed, so it can't change a volume
         # Presses only act on the system. LEDs change when PipeWire reports the new state.
         if isinstance(event, PadPress):
             self._on_press(event.idx)
@@ -99,7 +113,36 @@ class App:
                 return
             self.audio.set_active_volume(active.fader.level_for_press(idx, current))
 
+    def tick(self) -> None:
+        """Start, advance or stop the idle animation as time passes."""
+        cfg = self.layout.idle
+        if cfg is None:
+            self.idle = None
+            return
+        now = self.clock()
+        if self.idle is not None and self.idle.name != cfg.mode:
+            self.idle = None  # mode changed in the config: start the new one below
+        if self.idle is None:
+            if now - self._last_activity >= cfg.after:
+                log.debug("Idle for %.0fs: starting %s", now - self._last_activity, cfg.mode)
+                self.idle = idle.MODES[cfg.mode](self.rng)
+                self._next_frame = now + cfg.interval
+        elif now >= self._next_frame:
+            self.idle.step()
+            # Keep a steady pace, but don't try to catch up after a stall.
+            self._next_frame = max(self._next_frame + cfg.interval, now)
+
+    def seconds_until_tick(self) -> float:
+        """How long the main loop may block before tick() has something to do."""
+        cfg = self.layout.idle
+        if cfg is None:
+            return float("inf")
+        due = self._next_frame if self.idle else self._last_activity + cfg.after
+        return max(0.0, due - self.clock())
+
     def render(self) -> grid.Frame:
+        if self.idle is not None:
+            return self.idle.render()
         s, layout = self.state, self.layout
         frame: grid.Frame = {}
         if layout.master:
@@ -124,8 +167,10 @@ class App:
         if self.device is not None:
             self.device.set_leds(self._differ.diff(self.render()))
 
-    def step(self, event: Event) -> None:
-        self.handle(event)
+    def step(self, event: Event | None = None) -> None:
+        if event is not None:
+            self.handle(event)
+        self.tick()
         self.refresh()
 
 
@@ -217,7 +262,7 @@ def serve(watcher: ConfigWatcher, layout: Layout, audio, events: "queue.Queue[Ev
             if not waiting_logged:
                 log.info("Waiting for the Launchpad (%s)", e)
                 waiting_logged = True
-            _idle(events, app)
+            _wait_for_device(events, app)
             continue
         waiting_logged = False
         with stack:
@@ -231,7 +276,7 @@ def serve(watcher: ConfigWatcher, layout: Layout, audio, events: "queue.Queue[Ev
                 app.attach(None)
 
 
-def _idle(events: "queue.Queue[Event]", app: App) -> None:
+def _wait_for_device(events: "queue.Queue[Event]", app: App) -> None:
     """Wait for the device to show up, still tracking state so the queue can't grow.
 
     Leftover pad presses from before an unplug are dropped, not acted on.
@@ -252,12 +297,13 @@ def _session(app: App, watcher: ConfigWatcher, audio, events: "queue.Queue[Event
     next_present = now + DEVICE_POLL_S
     while True:
         try:
+            event = None
             try:
-                event = events.get(timeout=CONFIG_POLL_S)
+                event = events.get(timeout=min(CONFIG_POLL_S, app.seconds_until_tick()))
                 log.debug("%s", event)
-                app.step(event)
             except queue.Empty:
                 pass
+            app.step(event)
             now = time.monotonic()
             if now >= next_present:
                 next_present = now + DEVICE_POLL_S
