@@ -16,9 +16,10 @@ Original goals from Tonio are marked ⭐. Rough priority: **P1** = build first, 
 - **P3 Live voice effects**: toggle PipeWire filter chains (pitch shift, reverb, radio/walkie-talkie)
 
 ## Discord
-- ⭐ **P1 Mute / deafen** with LED state
-- **P2** Other actions via keybinds sent over uinput (push-to-talk, toggle camera/screen share), depending on the approach chosen (see HANDOFF open questions)
-- **P2** Flash a pad on mentions/DMs
+- ✅ **P1 Mute / deafen** with LED state (local RPC)
+- **P2** Flash a pad on mentions/DMs (RPC `NOTIFICATION_CREATE`, needs the `rpc.notifications.read` scope)
+- **P2** Speaking indicators / per-user volume for people in the current voice channel (RPC)
+- **P3** Push-to-talk, camera/screen-share toggles (RPC where supported, else uinput keybinds)
 
 ## Status display (LEDs as a dashboard)
 - **P2 Home server grid**: one pad per container/service, green = healthy, red = down; hold a pad to restart the service

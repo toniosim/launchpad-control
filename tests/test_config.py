@@ -105,3 +105,30 @@ def test_active_app_validation():
     with pytest.raises(ConfigError, match="column 2 is used by both app 'a' and active_app"):
         parse({"apps": [{"name": "a", "column": 2, "color": "red"}],
                "active_app": {"column": 2, "color": "cyan"}})
+
+
+# ---- discord ----
+
+def test_discord_section():
+    layout = parse({"discord": {"client_id": "123", "mute_pad": [2, 8], "deafen_pad": [3, 8]}})
+    assert layout.discord == config.DiscordLayout("123", 28, 38)
+
+
+def test_discord_client_id_as_bare_integer_is_accepted():
+    assert parse({"discord": {"client_id": 1568435092655837295}}).discord.client_id == \
+        "1568435092655837295"
+
+
+@pytest.mark.parametrize("data, message", [
+    ({"discord": {}}, "missing 'client_id'"),
+    ({"discord": {"client_id": "abc"}}, "Application ID"),
+    ({"discord": {"client_id": "1", "mute": [1, 1]}}, "unknown key"),
+    ({"discord": {"client_id": "1", "mute_pad": [1, 1], "deafen_pad": [1, 1]}}, "same pad"),
+    ({"mic_mute": {"pad": [1, 8]}, "discord": {"client_id": "1", "mute_pad": [1, 8]}},
+     "same pad"),
+    ({"master": {"column": 8, "color": "red"},
+      "discord": {"client_id": "1", "deafen_pad": [3, 8]}}, "belongs to master"),
+])
+def test_discord_errors(data, message):
+    with pytest.raises(ConfigError, match=message):
+        parse(data)

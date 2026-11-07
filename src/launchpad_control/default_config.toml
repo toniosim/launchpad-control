@@ -38,3 +38,13 @@ color = "purple"
 column = 4
 color = "cyan"
 ignore = ["speech-dispatcher"]   # always-present system streams
+
+# Discord mute / deafen over Discord's local RPC socket. Needs your own Discord app:
+# client_id is its Application ID, and its client secret goes in
+# ~/.config/launchpad-control/discord-secret (see README, "Discord"). Discord asks you to
+# click Authorize once. Red = muted/deafened, dim blurple = live, dim grey = Discord not
+# connected. Changing client_id needs a restart (lpctl restart); pads update live.
+[discord]
+client_id = "1568435092655837295"
+mute_pad = [2, 8]
+deafen_pad = [3, 8]

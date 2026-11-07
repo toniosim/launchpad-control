@@ -49,11 +49,20 @@ class ActiveAppFader:
 
 
 @dataclass(frozen=True)
+class DiscordLayout:
+    """Discord voice controls. client_id is the Application ID of the user's own Discord app."""
+    client_id: str
+    mute_pad: int | None = None
+    deafen_pad: int | None = None
+
+
+@dataclass(frozen=True)
 class Layout:
     mic_mute_pad: int | None = None
     master: Fader | None = None
     apps: tuple[AppFader, ...] = ()
     active_app: ActiveAppFader | None = None
+    discord: DiscordLayout | None = None
 
     def faders(self) -> list[Fader]:
         return (([self.master] if self.master else []) + [a.fader for a in self.apps]
@@ -62,9 +71,13 @@ class Layout:
 
 # ---- locating files ------------------------------------------------------------
 
-def user_config_path() -> Path:
+def user_config_dir() -> Path:
     base = os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config"
-    return Path(base) / "launchpad-control" / "config.toml"
+    return Path(base) / "launchpad-control"
+
+
+def user_config_path() -> Path:
+    return user_config_dir() / "config.toml"
 
 
 def default_config_text() -> str:
@@ -98,7 +111,7 @@ def load(path: Path | None) -> Layout:
 # ---- parsing + validation ------------------------------------------------------
 
 def parse(data: dict[str, Any]) -> Layout:
-    _no_unknown_keys(data, {"mic_mute", "master", "apps", "active_app"}, "top level")
+    _no_unknown_keys(data, {"mic_mute", "master", "apps", "active_app", "discord"}, "top level")
 
     mic_pad = None
     if "mic_mute" in data:
@@ -136,7 +149,11 @@ def parse(data: dict[str, Any]) -> Layout:
             raise ConfigError("[active_app]: ignore must be a list of non-empty strings")
         active = ActiveAppFader(_fader(section, "[active_app]", {"ignore"}), tuple(ignore))
 
-    layout = Layout(mic_pad, master, tuple(apps), active)
+    discord = None
+    if "discord" in data:
+        discord = _discord(_table(data["discord"], "[discord]"))
+
+    layout = Layout(mic_pad, master, tuple(apps), active, discord)
     _check_overlaps(layout)
     return layout
 
@@ -148,6 +165,21 @@ def _fader(section: dict[str, Any], where: str, extra_keys: set[str]) -> Fader:
         raise ConfigError(f"{where}: column must be 1-8, got {col!r}")
     color = _color(_required(section, "color", where), f"{where} color")
     return Fader(col=col, color=color)
+
+
+def _discord(section: dict[str, Any]) -> DiscordLayout:
+    where = "[discord]"
+    _no_unknown_keys(section, {"client_id", "mute_pad", "deafen_pad"}, where)
+    client_id = _required(section, "client_id", where)
+    if isinstance(client_id, int) and not isinstance(client_id, bool):
+        client_id = str(client_id)
+    if not isinstance(client_id, str) or not client_id.isdigit():
+        raise ConfigError(f"{where}: client_id must be your Discord app's Application ID "
+                          f"(digits, in quotes), got {client_id!r}")
+    mute = _pad(section["mute_pad"], f"{where} mute_pad") if "mute_pad" in section else None
+    deafen = (_pad(section["deafen_pad"], f"{where} deafen_pad")
+              if "deafen_pad" in section else None)
+    return DiscordLayout(client_id, mute, deafen)
 
 
 def _check_overlaps(layout: Layout) -> None:
@@ -165,9 +197,20 @@ def _check_overlaps(layout: Layout) -> None:
             raise ConfigError(f"column {fader.col} is used by both {owners[fader.col]} and {label}")
         owners[fader.col] = label
 
-    if layout.mic_mute_pad is not None and layout.mic_mute_pad % 10 in owners:
-        col = layout.mic_mute_pad % 10
-        raise ConfigError(f"mic_mute pad is in column {col}, which belongs to {owners[col]}")
+    pads = [("mic_mute pad", layout.mic_mute_pad)]
+    if layout.discord:
+        pads += [("[discord] mute_pad", layout.discord.mute_pad),
+                 ("[discord] deafen_pad", layout.discord.deafen_pad)]
+    taken: dict[int, str] = {}
+    for label, pad in pads:
+        if pad is None:
+            continue
+        col = pad % 10
+        if col in owners:
+            raise ConfigError(f"{label} is in column {col}, which belongs to {owners[col]}")
+        if pad in taken:
+            raise ConfigError(f"{label} is the same pad as {taken[pad]}")
+        taken[pad] = label
 
 
 def _pad(value: Any, where: str) -> int:

@@ -14,7 +14,8 @@ from typing import Callable, ContextManager, Protocol
 from . import config, grid
 from .config import ConfigError, Layout
 from .device import Device
-from .events import AudioChanged, Event, PadPress
+from .events import AudioChanged, DiscordChanged, Event, PadPress
+from .integrations.discord import DiscordState
 from .integrations.pipewire import AudioState
 
 log = logging.getLogger(__name__)
@@ -30,12 +31,26 @@ class AudioControl(Protocol):
     def set_active_volume(self, level: float) -> None: ...
 
 
+class DiscordControl(Protocol):
+    def toggle_mute(self) -> None: ...
+    def toggle_deafen(self) -> None: ...
+
+
 class App:
-    def __init__(self, device: Device, audio: AudioControl, layout: Layout) -> None:
-        self.device = device
+    """Holds all state; outlives device sessions so a replugged Launchpad repaints at once."""
+
+    def __init__(self, device: Device | None, audio: AudioControl, layout: Layout,
+                 discord: DiscordControl | None = None) -> None:
         self.audio = audio
+        self.discord = discord
         self.layout = layout
         self.state = AudioState()
+        self.discord_state = DiscordState()
+        self.attach(device)
+
+    def attach(self, device: Device | None) -> None:
+        """Use a (new) device. Its LEDs start blank, so the next refresh sends everything."""
+        self.device = device
         self._differ = grid.FrameDiffer()
 
     def handle(self, event: Event) -> None:
@@ -46,11 +61,23 @@ class App:
             if event.state.active_app != self.state.active_app and self.layout.active_app:
                 log.info("Active-app fader now controls: %s", event.state.active_app or "nothing")
             self.state = event.state
+        elif isinstance(event, DiscordChanged):
+            if event.state.connected != self.discord_state.connected:
+                log.info("Discord %s", "connected" if event.state.connected else "disconnected")
+            self.discord_state = event.state
 
     def _on_press(self, idx: int) -> None:
         layout = self.layout
         if idx == layout.mic_mute_pad:
             self.audio.toggle_mic_mute()
+            return
+        if layout.discord and idx in (layout.discord.mute_pad, layout.discord.deafen_pad):
+            if self.discord is None:
+                log.info("Discord isn't set up (restart after adding [discord] to the config)")
+            elif idx == layout.discord.mute_pad:
+                self.discord.toggle_mute()
+            else:
+                self.discord.toggle_deafen()
             return
         if layout.master and layout.master.contains(idx):
             self.audio.set_master_volume(
@@ -83,10 +110,19 @@ class App:
             frame.update(layout.active_app.fader.render(s.active_volume))
         if layout.mic_mute_pad is not None and s.mic_muted is not None:
             frame[layout.mic_mute_pad] = grid.RED if s.mic_muted else grid.DIM_GREEN
+        if layout.discord:
+            d = self.discord_state
+            # Deafened means nobody hears you either, so the mute pad goes red too.
+            for pad, on in ((layout.discord.mute_pad, d.muted or d.deafened),
+                            (layout.discord.deafen_pad, d.deafened)):
+                if pad is not None:
+                    frame[pad] = (grid.DIM_GREY if not d.connected
+                                  else grid.RED if on else grid.DIM_BLURPLE)
         return frame
 
     def refresh(self) -> None:
-        self.device.set_leds(self._differ.diff(self.render()))
+        if self.device is not None:
+            self.device.set_leds(self._differ.diff(self.render()))
 
     def step(self, event: Event) -> None:
         self.handle(event)
@@ -126,6 +162,7 @@ class ConfigWatcher:
 
 def run(config_path: Path | None) -> None:
     from .device import LaunchpadDevice, launchpad_present
+    from .integrations.discord import Discord
     from .integrations.pipewire import PipeWire
 
     watcher = ConfigWatcher(config_path)
@@ -140,25 +177,35 @@ def run(config_path: Path | None) -> None:
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, _sigterm)
 
+    discord = None
+    if layout.discord:
+        cfg_dir = config.user_config_dir()
+        discord = Discord(layout.discord.client_id, cfg_dir / "discord-secret",
+                          cfg_dir / "discord-token.json")
+
     audio.watch(lambda s: events.put(AudioChanged(s)))  # also sends the initial state
+    if discord:
+        discord.watch(lambda s: events.put(DiscordChanged(s)))
     log.info("Running. Ctrl+C to quit.")
     try:
-        serve(watcher, layout, audio, events, LaunchpadDevice, launchpad_present)
+        serve(watcher, layout, audio, events, LaunchpadDevice, launchpad_present, discord)
     except KeyboardInterrupt:
         pass
     finally:
         audio.stop()
+        if discord:
+            discord.stop()
 
 
 def serve(watcher: ConfigWatcher, layout: Layout, audio, events: "queue.Queue[Event]",
           open_device: Callable[[], ContextManager[Device]],
-          present: Callable[[], bool]) -> None:
+          present: Callable[[], bool], discord: DiscordControl | None = None) -> None:
     """Run until interrupted, surviving the Launchpad being absent, unplugged or replugged.
 
-    The audio state and layout carry over between device sessions, so a replugged
+    The App (state and layout) carries over between device sessions, so a replugged
     Launchpad is repainted from the current state straight away.
     """
-    state = AudioState()
+    app = App(None, audio, layout, discord)
     waiting_logged = False
     while True:
         stack = ExitStack()
@@ -170,28 +217,31 @@ def serve(watcher: ConfigWatcher, layout: Layout, audio, events: "queue.Queue[Ev
             if not waiting_logged:
                 log.info("Waiting for the Launchpad (%s)", e)
                 waiting_logged = True
-            state = _idle(events, state)
+            _idle(events, app)
             continue
         waiting_logged = False
         with stack:
             log.info("Launchpad connected")
-            app = App(dev, audio, layout)
-            app.state = state
+            app.attach(dev)
             dev.set_event_handler(events.put)
             try:
                 app.refresh()
                 _session(app, watcher, audio, events, present)
             finally:
-                layout, state = app.layout, app.state
+                app.attach(None)
 
 
-def _idle(events: "queue.Queue[Event]", state: AudioState) -> AudioState:
-    """Wait for the device to show up, still tracking audio state so the queue can't grow."""
+def _idle(events: "queue.Queue[Event]", app: App) -> None:
+    """Wait for the device to show up, still tracking state so the queue can't grow.
+
+    Leftover pad presses from before an unplug are dropped, not acted on.
+    """
     try:
         event = events.get(timeout=DEVICE_POLL_S)
     except queue.Empty:
-        return state
-    return event.state if isinstance(event, AudioChanged) else state
+        return
+    if isinstance(event, (AudioChanged, DiscordChanged)):
+        app.handle(event)
 
 
 def _session(app: App, watcher: ConfigWatcher, audio, events: "queue.Queue[Event]",
@@ -233,6 +283,10 @@ def _maybe_reload(watcher: ConfigWatcher, app: App, audio) -> None:
     if layout is None:
         return
     log.info("Config reloaded from %s", watcher.path or "packaged default")
+    old_id = app.layout.discord.client_id if app.layout.discord else None
+    new_id = layout.discord.client_id if layout.discord else None
+    if new_id != old_id:
+        log.warning("Discord client_id changed: restart to apply (lpctl restart)")
     app.layout = layout
     audio.set_targets(*_audio_targets(layout))
     audio.request_refresh()  # app volumes for any new apps arrive as an AudioChanged

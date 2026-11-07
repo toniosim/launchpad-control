@@ -10,6 +10,8 @@ GREEN: RGB = (0, 127, 0)
 DIM_GREEN: RGB = (0, 20, 0)
 ORANGE: RGB = (127, 35, 0)
 PURPLE: RGB = (70, 0, 127)
+DIM_BLURPLE: RGB = (11, 13, 32)  # Discord's brand colour, dimmed: "live"
+DIM_GREY: RGB = (8, 8, 8)        # control exists but its target isn't available
 
 
 def scale(rgb: RGB, brightness: float) -> RGB:

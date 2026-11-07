@@ -10,6 +10,7 @@ Turns the 8×8 RGB pad grid into a control surface for the desktop: per-app volu
 - ✅ **Mic mute** (pad 18, bottom-right): toggles system mic mute; red = muted, dim green = live.
 - ✅ **Volume faders**: column 1 = master (green), column 2 = Firefox (orange), column 3 = Discord (purple). Press a pad to set the level (row × 12.5%); press the bottom pad again to go to 0. An app that isn't playing shows only a dim bottom pad.
 - ✅ **Active-app fader** (column 4, cyan): controls whatever else is playing (e.g. a game): the newest audio stream not claimed by another fader, skipping notification sounds, paused streams and an ignore list. The log says which app it's controlling.
+- ✅ **Discord mute / deafen** (pads 28 and 38, above mic mute): red = muted/deafened, dim blurple = live, dim grey = Discord not running. Follows changes made in Discord too. One-time setup below.
 - All LEDs follow the real PipeWire state, including changes made elsewhere (keyboard, panel, pavucontrol).
 - ✅ **Config file**: layout, colours and app matching live in TOML (see below), reloaded live.
 - ✅ **Runs in the background** as a systemd user service, survives unplug/replug, one-command updates (see below).
@@ -62,6 +63,37 @@ The layout lives in `~/.config/launchpad-control/config.toml`. Without that file
 
 Edits are picked up within a second while the app runs. If an edit is invalid, the error is
 logged and the current layout stays active.
+
+## Discord
+
+Mute and deafen go through Discord's local RPC socket (works with the official client, native
+or Flatpak; not Vesktop/WebCord). Discord only allows voice control for apps you own, so you
+register your own app once:
+
+1. Go to <https://discord.com/developers/applications>, click **New Application**, and name it
+   (e.g. "Launchpad").
+2. Copy its **Application ID** into the config (the packaged default already has one):
+   ```toml
+   [discord]
+   client_id = "1568435092655837295"
+   mute_pad = [2, 8]
+   deafen_pad = [3, 8]
+   ```
+3. Under **OAuth2**: add `http://localhost` to **Redirects** and save. Then click **Reset Secret**
+   and save the secret to a file (it never goes in the config or the repo):
+   ```bash
+   mkdir -p ~/.config/launchpad-control
+   printf '%s\n' 'PASTE_SECRET_HERE' > ~/.config/launchpad-control/discord-secret
+   chmod 600 ~/.config/launchpad-control/discord-secret
+   ```
+4. `lpctl restart`, then click **Authorize** in the popup Discord shows. The token is saved in
+   `~/.config/launchpad-control/discord-token.json` and refreshed automatically, so this happens
+   once.
+
+If Discord isn't running, the pads are dim grey and the app reconnects when it starts. If you
+decline the popup (or the setup is wrong) it asks again after 10 minutes or on `lpctl restart`;
+`lpctl logs` says what went wrong. To revoke access, remove the app under Discord → User Settings →
+Authorized Apps and delete `discord-token.json`.
 
 ## Docs
 

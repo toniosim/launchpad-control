@@ -84,7 +84,7 @@ LED indices always use Programmer-mode numbering. While in Programmer mode, the 
 | Soundboard into mic | Create a virtual sink for soundboard output plus a virtual source that mixes real mic + soundboard; select the virtual source as the mic in Discord/games | PipeWire options: `pactl load-module module-null-sink` + `module-remap-source` / loopback, or a persistent config in `~/.config/pipewire/pipewire.conf.d/`. Also route the soundboard to headphones so you can hear it |
 | Keystrokes / hotkeys | `ydotool` (uinput) or a Python `evdev` uinput device | **`xdotool` does not work on Wayland/COSMIC.** uinput needs the user in the `input` group or a udev rule |
 | Media | `playerctl` (MPRIS) | play/pause/next, now-playing metadata for colors |
-| Discord | Mute/deafen via system mic mute (above) or Discord keybinds sent through uinput | Discord's global keybinds are unreliable under Wayland, and its RPC voice-control scopes are restricted. Decide approach later (open question) |
+| Discord | **Local RPC** over the `discord-ipc-0` Unix socket (`integrations/discord.py`) | Decided: RPC, not keybinds (unreliable on Wayland). The restricted `rpc`/`rpc.voice.*` scopes work for the app's owner, so the user registers their own Discord app: Application ID in `[discord] client_id`, secret in `~/.config/launchpad-control/discord-secret`, token cached in `discord-token.json`. Flatpak socket is at `$XDG_RUNTIME_DIR/app/com.discordapp.Discord/`. Verified: handshake with the real client returns READY. More is possible over the same socket: per-user volume, speaking indicators, channel join, `NOTIFICATION_CREATE` (needs `rpc.notifications.read`, which means one more Authorize click) |
 | OBS | obs-websocket (built into OBS 28+) | scene switch, record/stream state for LEDs |
 | Home server / Home Assistant | HTTP APIs (HA REST/WebSocket, container health endpoints) | status grid + actions |
 | Running in background | systemd **user** service (done: `systemd/launchpad-control.service` template, installed by `scripts/install-service.sh`) | reconnect loop is `app.serve`; polls `launchpad_present()` every 2s since rtmidi gives no unplug callback. Exit code 2 (config error) is not restarted |
@@ -120,7 +120,7 @@ Key design decisions so far:
 
 ## Open questions
 
-1. Discord control path: plain system mic mute vs. uinput keybinds vs. RPC. Which Discord actions are actually needed beyond mute/deafen?
+1. ~~Discord control path~~: decided, local RPC (see the integration notes). Still open: which Discord actions beyond mute/deafen are worth adding.
 2. Soundboard audio backend: play via `pw-play`/`paplay` subprocesses targeted at the virtual sink, or an in-process mixer (e.g. `sounddevice` + numpy) for choke groups, looping, and velocity volume?
 3. Async model: plain threads vs. `asyncio` (helpful once there are websocket integrations like OBS and HA).
 4. How to test without hardware: a fake device that records LED frames would let the page logic be unit-tested (and maybe render to a terminal or web preview).

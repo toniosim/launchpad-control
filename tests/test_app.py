@@ -3,8 +3,9 @@ import pytest
 from launchpad_control import grid
 from launchpad_control import config
 from launchpad_control.app import App
-from launchpad_control.events import AudioChanged
+from launchpad_control.events import AudioChanged, DiscordChanged
 from launchpad_control.fake_device import FakeDevice
+from launchpad_control.integrations.discord import DiscordState
 from launchpad_control.integrations.pipewire import AudioState
 
 LAYOUT = config.load(None)  # the packaged default layout
@@ -30,9 +31,20 @@ class FakeAudio:
         self.calls.append(("active", level))
 
 
-def make_app():
+class FakeDiscord:
+    def __init__(self):
+        self.calls = []
+
+    def toggle_mute(self):
+        self.calls.append("mute")
+
+    def toggle_deafen(self):
+        self.calls.append("deafen")
+
+
+def make_app(discord=None):
     dev, audio = FakeDevice(), FakeAudio()
-    app = App(dev, audio, LAYOUT)
+    app = App(dev, audio, LAYOUT, discord)
     dev.set_event_handler(app.step)
     return app, dev, audio
 
@@ -52,8 +64,10 @@ def test_only_dim_placeholders_until_state_known():
     app, dev, _ = make_app()
     app.refresh()
     assert MIC_MUTE_PAD not in dev.leds
-    # each fader shows just its dim bottom pad
-    assert set(dev.leds) == {grid.idx(1, f.col) for f in LAYOUT.faders()}
+    # each fader shows just its dim bottom pad; Discord pads show "not connected"
+    discord_pads = {LAYOUT.discord.mute_pad, LAYOUT.discord.deafen_pad}
+    assert set(dev.leds) == {grid.idx(1, f.col) for f in LAYOUT.faders()} | discord_pads
+    assert {dev.leds[p] for p in discord_pads} == {grid.DIM_GREY}
 
 
 def test_mute_press_toggles_but_does_not_change_led():
@@ -163,4 +177,53 @@ def test_active_app_press_ignored_when_nothing_playing():
     app, dev, audio = make_app()
     dev.emit(state())
     dev.press(grid.idx(8, LAYOUT.active_app.fader.col))
+    assert audio.calls == []
+
+
+# ---- discord ----
+
+DISCORD_MUTE = LAYOUT.discord.mute_pad
+DISCORD_DEAF = LAYOUT.discord.deafen_pad
+
+
+def discord(**kw):
+    return DiscordChanged(DiscordState(**kw))
+
+
+def test_discord_pads_follow_state():
+    app, dev, _ = make_app(FakeDiscord())
+    dev.emit(discord(connected=True, muted=False, deafened=False))
+    assert dev.leds[DISCORD_MUTE] == dev.leds[DISCORD_DEAF] == grid.DIM_BLURPLE
+    dev.emit(discord(connected=True, muted=True, deafened=False))
+    assert dev.leds[DISCORD_MUTE] == grid.RED
+    assert dev.leds[DISCORD_DEAF] == grid.DIM_BLURPLE
+
+
+def test_deafened_shows_mute_red_too():
+    app, dev, _ = make_app(FakeDiscord())
+    dev.emit(discord(connected=True, muted=False, deafened=True))
+    assert dev.leds[DISCORD_MUTE] == dev.leds[DISCORD_DEAF] == grid.RED
+
+
+def test_discord_disconnect_dims_pads():
+    app, dev, _ = make_app(FakeDiscord())
+    dev.emit(discord(connected=True, muted=True, deafened=True))
+    dev.emit(discord())
+    assert dev.leds[DISCORD_MUTE] == dev.leds[DISCORD_DEAF] == grid.DIM_GREY
+
+
+def test_discord_presses_toggle_without_changing_leds():
+    d = FakeDiscord()
+    app, dev, audio = make_app(d)
+    dev.emit(discord(connected=True, muted=False, deafened=False))
+    dev.press(DISCORD_MUTE)
+    dev.press(DISCORD_DEAF)
+    assert d.calls == ["mute", "deafen"]
+    assert audio.calls == []
+    assert dev.leds[DISCORD_MUTE] == grid.DIM_BLURPLE  # waits for Discord to confirm
+
+
+def test_discord_press_without_client_is_harmless():
+    app, dev, audio = make_app(None)
+    dev.press(DISCORD_MUTE)
     assert audio.calls == []

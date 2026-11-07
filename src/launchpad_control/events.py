@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .integrations.discord import DiscordState
 from .integrations.pipewire import AudioState
 
 
@@ -36,4 +37,10 @@ class AudioChanged:
     state: AudioState
 
 
-Event = PadPress | PadRelease | PadPressure | ButtonChange | AudioChanged
+@dataclass(frozen=True)
+class DiscordChanged:
+    """Discord connection / voice state changed."""
+    state: DiscordState
+
+
+Event = PadPress | PadRelease | PadPressure | ButtonChange | AudioChanged | DiscordChanged
