@@ -57,6 +57,19 @@ class DiscordLayout:
 
 
 @dataclass(frozen=True)
+class MediaLayout:
+    """Media transport pads (playerctl). Any pad may be left out."""
+    previous_pad: int | None = None
+    play_pause_pad: int | None = None
+    next_pad: int | None = None
+    color: RGB = (0, 0, 127)
+
+    def pads(self) -> tuple[int, ...]:
+        return tuple(p for p in (self.previous_pad, self.play_pause_pad, self.next_pad)
+                     if p is not None)
+
+
+@dataclass(frozen=True)
 class IdleLayout:
     """Screensaver: after `after` seconds without a press, play `mode` on the whole grid."""
     after: float
@@ -71,6 +84,7 @@ class Layout:
     apps: tuple[AppFader, ...] = ()
     active_app: ActiveAppFader | None = None
     discord: DiscordLayout | None = None
+    media: MediaLayout | None = None
     idle: IdleLayout | None = None
 
     def faders(self) -> list[Fader]:
@@ -120,7 +134,8 @@ def load(path: Path | None) -> Layout:
 # ---- parsing + validation ------------------------------------------------------
 
 def parse(data: dict[str, Any]) -> Layout:
-    _no_unknown_keys(data, {"mic_mute", "master", "apps", "active_app", "discord", "idle"},
+    _no_unknown_keys(data, {"mic_mute", "master", "apps", "active_app", "discord", "media",
+                      "idle"},
                      "top level")
 
     mic_pad = None
@@ -163,11 +178,15 @@ def parse(data: dict[str, Any]) -> Layout:
     if "discord" in data:
         discord = _discord(_table(data["discord"], "[discord]"))
 
+    media = None
+    if "media" in data:
+        media = _media(_table(data["media"], "[media]"))
+
     idle_layout = None
     if "idle" in data:
         idle_layout = _idle(_table(data["idle"], "[idle]"))
 
-    layout = Layout(mic_pad, master, tuple(apps), active, discord, idle_layout)
+    layout = Layout(mic_pad, master, tuple(apps), active, discord, media, idle_layout)
     _check_overlaps(layout)
     return layout
 
@@ -194,6 +213,16 @@ def _discord(section: dict[str, Any]) -> DiscordLayout:
     deafen = (_pad(section["deafen_pad"], f"{where} deafen_pad")
               if "deafen_pad" in section else None)
     return DiscordLayout(client_id, mute, deafen)
+
+
+def _media(section: dict[str, Any]) -> MediaLayout:
+    where = "[media]"
+    _no_unknown_keys(section, {"previous_pad", "play_pause_pad", "next_pad", "color"}, where)
+    pads = {key: _pad(section[key], f"{where} {key}") if key in section else None
+            for key in ("previous_pad", "play_pause_pad", "next_pad")}
+    color = (_color(section["color"], f"{where} color") if "color" in section
+             else MediaLayout.color)
+    return MediaLayout(pads["previous_pad"], pads["play_pause_pad"], pads["next_pad"], color)
 
 
 def _idle(section: dict[str, Any]) -> IdleLayout:
@@ -232,6 +261,10 @@ def _check_overlaps(layout: Layout) -> None:
     if layout.discord:
         pads += [("[discord] mute_pad", layout.discord.mute_pad),
                  ("[discord] deafen_pad", layout.discord.deafen_pad)]
+    if layout.media:
+        pads += [("[media] previous_pad", layout.media.previous_pad),
+                 ("[media] play_pause_pad", layout.media.play_pause_pad),
+                 ("[media] next_pad", layout.media.next_pad)]
     taken: dict[int, str] = {}
     for label, pad in pads:
         if pad is None:

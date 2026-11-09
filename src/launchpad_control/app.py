@@ -37,15 +37,23 @@ class DiscordControl(Protocol):
     def toggle_deafen(self) -> None: ...
 
 
+class MediaControl(Protocol):
+    def previous(self) -> None: ...
+    def play_pause(self) -> None: ...
+    def next(self) -> None: ...
+
+
 class App:
     """Holds all state; outlives device sessions so a replugged Launchpad repaints at once."""
 
     def __init__(self, device: Device | None, audio: AudioControl, layout: Layout,
                  discord: DiscordControl | None = None,
+                 media: MediaControl | None = None,
                  clock: Callable[[], float] = time.monotonic,
                  rng: random.Random | None = None) -> None:
         self.audio = audio
         self.discord = discord
+        self.media = media
         self.layout = layout
         self.state = AudioState()
         self.discord_state = DiscordState()
@@ -92,6 +100,14 @@ class App:
                 self.discord.toggle_mute()
             else:
                 self.discord.toggle_deafen()
+            return
+        if layout.media and idx in layout.media.pads():
+            if self.media is not None:
+                m = layout.media
+                action = (self.media.previous if idx == m.previous_pad
+                          else self.media.play_pause if idx == m.play_pause_pad
+                          else self.media.next)
+                action()
             return
         if layout.master and layout.master.contains(idx):
             self.audio.set_master_volume(
@@ -153,6 +169,9 @@ class App:
             frame.update(layout.active_app.fader.render(s.active_volume))
         if layout.mic_mute_pad is not None and s.mic_muted is not None:
             frame[layout.mic_mute_pad] = grid.RED if s.mic_muted else grid.DIM_GREEN
+        if layout.media:
+            for pad in layout.media.pads():
+                frame[pad] = layout.media.color
         if layout.discord:
             d = self.discord_state
             # Deafened means nobody hears you either, so the mute pad goes red too.
@@ -208,6 +227,7 @@ class ConfigWatcher:
 def run(config_path: Path | None) -> None:
     from .device import LaunchpadDevice, launchpad_present
     from .integrations.discord import Discord
+    from .integrations.media import Media
     from .integrations.pipewire import PipeWire
 
     watcher = ConfigWatcher(config_path)
@@ -233,7 +253,8 @@ def run(config_path: Path | None) -> None:
         discord.watch(lambda s: events.put(DiscordChanged(s)))
     log.info("Running. Ctrl+C to quit.")
     try:
-        serve(watcher, layout, audio, events, LaunchpadDevice, launchpad_present, discord)
+        serve(watcher, layout, audio, events, LaunchpadDevice, launchpad_present, discord,
+              Media())
     except KeyboardInterrupt:
         pass
     finally:
@@ -244,13 +265,14 @@ def run(config_path: Path | None) -> None:
 
 def serve(watcher: ConfigWatcher, layout: Layout, audio, events: "queue.Queue[Event]",
           open_device: Callable[[], ContextManager[Device]],
-          present: Callable[[], bool], discord: DiscordControl | None = None) -> None:
+          present: Callable[[], bool], discord: DiscordControl | None = None,
+          media: MediaControl | None = None) -> None:
     """Run until interrupted, surviving the Launchpad being absent, unplugged or replugged.
 
     The App (state and layout) carries over between device sessions, so a replugged
     Launchpad is repainted from the current state straight away.
     """
-    app = App(None, audio, layout, discord)
+    app = App(None, audio, layout, discord, media)
     waiting_logged = False
     while True:
         stack = ExitStack()

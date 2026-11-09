@@ -7,10 +7,11 @@ Turns the 8×8 RGB pad grid into a control surface for the desktop: per-app volu
 ## Status
 
 - ✅ `scripts/lp_hello.py` works on hardware: enters Programmer mode, sets RGB per pad, lights pads on press (velocity → brightness), logs all incoming MIDI, restores Live mode on exit.
-- ✅ **Mic mute** (pad 18, bottom-right): toggles system mic mute; red = muted, dim green = live.
+- ✅ **Mic mute** (pad 88, top-right): toggles system mic mute; red = muted, dim green = live.
 - ✅ **Volume faders**: column 1 = master (green), column 2 = Firefox (orange), column 3 = Discord (purple). Press a pad to set the level (row × 12.5%); press the bottom pad again to go to 0. An app that isn't playing shows only a dim bottom pad.
 - ✅ **Active-app fader** (column 4, cyan): controls whatever else is playing (e.g. a game): the newest audio stream not claimed by another fader, skipping notification sounds, paused streams and an ignore list. The log says which app it's controlling.
-- ✅ **Discord mute / deafen** (pads 28 and 38, above mic mute): red = muted/deafened, dim blurple = live, dim grey = Discord not running. Follows changes made in Discord too. One-time setup below.
+- ✅ **Discord mute / deafen** (pads 28 and 38, below mic mute): red = muted/deafened, dim blurple = live, dim grey = Discord not running. Follows changes made in Discord too. One-time setup below.
+- ✅ **Media controls** (bottom row, pads 16 / 17 / 18, blue): previous, play/pause, next for the active player via `playerctl` (MPRIS). With several players running, `playerctl` picks one; `playerctld` makes it the most recently active. Configure under `[media]`.
 - ✅ **Idle mode**: after 5 minutes without a press, the grid plays Conway's Game of Life (8×8 torus, colour = cell age, reseeds when it dies out or loops). Any press wakes it and does nothing else. Set `[idle] after`/`interval` in the config, or remove the section to disable.
 - All LEDs follow the real PipeWire state, including changes made elsewhere (keyboard, panel, pavucontrol).
 - ✅ **Config file**: layout, colours and app matching live in TOML (see below), reloaded live.

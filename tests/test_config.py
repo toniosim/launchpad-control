@@ -11,7 +11,7 @@ from launchpad_control.config import ConfigError, parse
 
 def test_default_config_loads():
     layout = config.load(None)
-    assert layout.mic_mute_pad == 18
+    assert layout.mic_mute_pad == 88
     assert layout.master.col == 1
     assert [a.name for a in layout.apps] == ["firefox", "discord"]
 
@@ -130,5 +130,32 @@ def test_discord_client_id_as_bare_integer_is_accepted():
       "discord": {"client_id": "1", "deafen_pad": [3, 8]}}, "belongs to master"),
 ])
 def test_discord_errors(data, message):
+    with pytest.raises(ConfigError, match=message):
+        parse(data)
+
+
+# ---- media ----
+
+def test_default_media_pads_are_on_the_bottom_row():
+    media = config.load(None).media
+    assert (media.previous_pad, media.play_pause_pad, media.next_pad) == (16, 17, 18)
+
+
+def test_media_section():
+    layout = parse({"media": {"play_pause_pad": [1, 5], "color": [1, 2, 3]}})
+    assert layout.media == config.MediaLayout(None, 15, None, (1, 2, 3))
+    assert layout.media.pads() == (15,)
+
+
+@pytest.mark.parametrize("data, message", [
+    ({"media": {"next_pad": 18}}, r"\[row, col\]"),
+    ({"media": {"skip_pad": [1, 1]}}, "unknown key"),
+    ({"media": {"color": "mauve"}}, "unknown colour"),
+    ({"media": {"previous_pad": [1, 5], "next_pad": [1, 5]}}, "same pad"),
+    ({"mic_mute": {"pad": [1, 8]}, "media": {"next_pad": [1, 8]}}, "same pad"),
+    ({"master": {"column": 6, "color": "red"}, "media": {"next_pad": [1, 6]}},
+     "belongs to master"),
+])
+def test_media_errors(data, message):
     with pytest.raises(ConfigError, match=message):
         parse(data)

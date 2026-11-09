@@ -42,9 +42,23 @@ class FakeDiscord:
         self.calls.append("deafen")
 
 
-def make_app(discord=None):
+class FakeMedia:
+    def __init__(self):
+        self.calls = []
+
+    def previous(self):
+        self.calls.append("previous")
+
+    def play_pause(self):
+        self.calls.append("play_pause")
+
+    def next(self):
+        self.calls.append("next")
+
+
+def make_app(discord=None, media=None):
     dev, audio = FakeDevice(), FakeAudio()
-    app = App(dev, audio, LAYOUT, discord)
+    app = App(dev, audio, LAYOUT, discord, media)
     dev.set_event_handler(app.step)
     return app, dev, audio
 
@@ -66,7 +80,9 @@ def test_only_dim_placeholders_until_state_known():
     assert MIC_MUTE_PAD not in dev.leds
     # each fader shows just its dim bottom pad; Discord pads show "not connected"
     discord_pads = {LAYOUT.discord.mute_pad, LAYOUT.discord.deafen_pad}
-    assert set(dev.leds) == {grid.idx(1, f.col) for f in LAYOUT.faders()} | discord_pads
+    media_pads = set(LAYOUT.media.pads())
+    assert set(dev.leds) == ({grid.idx(1, f.col) for f in LAYOUT.faders()}
+                             | discord_pads | media_pads)
     assert {dev.leds[p] for p in discord_pads} == {grid.DIM_GREY}
 
 
@@ -145,7 +161,7 @@ def test_app_colours():
 
 
 def test_default_layout_matches_spec():
-    assert MIC_MUTE_PAD == 18
+    assert MIC_MUTE_PAD == 88  # top of column 8
     assert (MASTER_FADER.col, MASTER_FADER.color) == (1, grid.GREEN)
     assert [(a.name, a.fader.col, a.fader.color) for a in APP_FADERS] == [
         ("firefox", 2, grid.ORANGE), ("discord", 3, grid.PURPLE)]
@@ -155,10 +171,10 @@ def test_default_layout_matches_spec():
 def test_layout_swap_takes_effect():
     app, dev, audio = make_app()
     dev.emit(state(mic_muted=True))
-    app.layout = config.parse({"mic_mute": {"pad": [8, 8]}})
+    app.layout = config.parse({"mic_mute": {"pad": [7, 8]}})
     app.refresh()
-    assert dev.leds == {88: grid.RED}  # faders gone, mute moved
-    dev.press(88)
+    assert dev.leds == {78: grid.RED}  # faders gone, mute moved
+    dev.press(78)
     assert audio.calls == [("mute",)]
 
 
@@ -227,3 +243,40 @@ def test_discord_press_without_client_is_harmless():
     app, dev, audio = make_app(None)
     dev.press(DISCORD_MUTE)
     assert audio.calls == []
+
+
+# ---- media ----
+
+MEDIA = LAYOUT.media
+
+
+def test_media_pads_are_lit_and_on_the_bottom_row():
+    app, dev, _ = make_app(media=FakeMedia())
+    app.refresh()
+    assert [p // 10 for p in MEDIA.pads()] == [1, 1, 1]
+    assert [dev.leds[p] for p in MEDIA.pads()] == [MEDIA.color] * 3
+
+
+def test_media_presses_call_the_player():
+    m = FakeMedia()
+    app, dev, audio = make_app(media=m)
+    dev.press(MEDIA.previous_pad)
+    dev.press(MEDIA.play_pause_pad)
+    dev.press(MEDIA.next_pad)
+    assert m.calls == ["previous", "play_pause", "next"]
+    assert audio.calls == []
+
+
+def test_media_press_without_player_backend_is_harmless():
+    app, dev, audio = make_app(media=None)
+    dev.press(MEDIA.play_pause_pad)
+    assert audio.calls == []
+
+
+def test_media_pad_in_unconfigured_layout_does_nothing():
+    m = FakeMedia()
+    app, dev, _ = make_app(media=m)
+    app.layout = config.parse({"media": {"next_pad": [1, 8]}})
+    dev.press(MEDIA.previous_pad)  # no longer a media pad
+    dev.press(MEDIA.next_pad)
+    assert m.calls == ["next"]

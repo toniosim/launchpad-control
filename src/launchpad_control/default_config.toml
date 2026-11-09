@@ -9,7 +9,7 @@
 
 # Pad that toggles system mic mute. Red = muted, dim green = live.
 [mic_mute]
-pad = [1, 8]            # [row, col] -> bottom-right
+pad = [8, 8]            # [row, col] -> top-right
 
 # Master (default output) volume fader.
 [master]
@@ -48,6 +48,14 @@ ignore = ["speech-dispatcher"]   # always-present system streams
 client_id = "1568435092655837295"
 mute_pad = [2, 8]
 deafen_pad = [3, 8]
+
+# Media controls (previous / play-pause / next) for the active player, via playerctl.
+# Any pad can be left out. `color` is optional (default blue).
+[media]
+previous_pad = [1, 6]
+play_pause_pad = [1, 7]
+next_pad = [1, 8]
+color = "blue"
 
 
 # Idle mode: after `after` seconds without a pad press, the whole grid plays an
