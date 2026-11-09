@@ -2,10 +2,11 @@ import pytest
 
 from launchpad_control import grid
 from launchpad_control import config
-from launchpad_control.app import App
-from launchpad_control.events import AudioChanged, DiscordChanged
+from launchpad_control.app import PAUSED_BRIGHTNESS, App
+from launchpad_control.events import AudioChanged, DiscordChanged, MediaChanged
 from launchpad_control.fake_device import FakeDevice
 from launchpad_control.integrations.discord import DiscordState
+from launchpad_control.integrations.media import MediaState
 from launchpad_control.integrations.pipewire import AudioState
 
 LAYOUT = config.load(None)  # the packaged default layout
@@ -250,11 +251,38 @@ def test_discord_press_without_client_is_harmless():
 MEDIA = LAYOUT.media
 
 
-def test_media_pads_are_lit_and_on_the_bottom_row():
+def media_state(status):
+    return MediaChanged(MediaState(status))
+
+
+def test_media_pads_are_on_the_bottom_row():
+    assert [p // 10 for p in MEDIA.pads()] == [1, 1, 1]
+
+
+def test_media_pads_grey_until_a_player_exists():
     app, dev, _ = make_app(media=FakeMedia())
     app.refresh()
-    assert [p // 10 for p in MEDIA.pads()] == [1, 1, 1]
+    assert [dev.leds[p] for p in MEDIA.pads()] == [grid.DIM_GREY] * 3
+
+
+def test_media_pads_follow_play_state():
+    app, dev, _ = make_app(media=FakeMedia())
+    dev.emit(media_state("Playing"))
     assert [dev.leds[p] for p in MEDIA.pads()] == [MEDIA.color] * 3
+    dev.emit(media_state("Paused"))  # only play/pause dims, so you can see it's paused
+    assert dev.leds[MEDIA.play_pause_pad] == grid.scale(MEDIA.color, PAUSED_BRIGHTNESS)
+    assert dev.leds[MEDIA.previous_pad] == dev.leds[MEDIA.next_pad] == MEDIA.color
+    dev.emit(media_state(None))  # player went away
+    assert [dev.leds[p] for p in MEDIA.pads()] == [grid.DIM_GREY] * 3
+    dev.emit(media_state("Playing"))
+    assert [dev.leds[p] for p in MEDIA.pads()] == [MEDIA.color] * 3
+
+
+def test_media_press_does_not_change_led_until_player_reports():
+    app, dev, _ = make_app(media=FakeMedia())
+    dev.emit(media_state("Playing"))
+    dev.press(MEDIA.play_pause_pad)
+    assert dev.leds[MEDIA.play_pause_pad] == MEDIA.color  # waits for playerctl to confirm
 
 
 def test_media_presses_call_the_player():

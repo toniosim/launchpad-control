@@ -29,7 +29,7 @@ Original goals from Tonio are marked ⭐. Rough priority: **P1** = build first, 
 - **P3 Notifications**: meeting countdown, Pomodoro timer that drains the grid
 
 ## Workflow macros
-- **P2 Media controls** via `playerctl`: ✅ previous / play-pause / next on the bottom row. Still open: play/pause LED that follows the player's real state (`playerctl --follow status`), color by active player
+- **P2 Media controls** via `playerctl`: ✅ previous / play-pause / next on the bottom row, LEDs follow the player's real state (`playerctl --follow status`). Still open: color by active player
 - **P2 App launcher / COSMIC workspace switching / window tiling** (uinput or ydotool; xdotool won't work on Wayland)
 - **P2 OBS**: scene switching, record/stream toggle with live-state LEDs (obs-websocket)
 - **P3 Clipboard/snippet bank**: frequently used strings, commands, test data

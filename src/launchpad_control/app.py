@@ -15,13 +15,16 @@ from typing import Callable, ContextManager, Protocol
 from . import config, grid, idle
 from .config import ConfigError, Layout
 from .device import Device
-from .events import AudioChanged, ButtonChange, DiscordChanged, Event, PadPress
+from .events import (AudioChanged, ButtonChange, DiscordChanged, Event, MediaChanged,
+                     PadPress)
 from .integrations.discord import DiscordState
+from .integrations.media import MediaState
 from .integrations.pipewire import AudioState
 
 log = logging.getLogger(__name__)
 
 CONFIG_POLL_S = 1.0
+PAUSED_BRIGHTNESS = 0.25  # play/pause pad while the player is paused
 DEVICE_POLL_S = 2.0  # how often to check the Launchpad is still (or again) plugged in
 
 
@@ -57,6 +60,7 @@ class App:
         self.layout = layout
         self.state = AudioState()
         self.discord_state = DiscordState()
+        self.media_state = MediaState()
         self.clock = clock
         self.rng = rng or random.Random()
         self.idle: idle.IdleMode | None = None  # the running idle animation, if any
@@ -87,6 +91,8 @@ class App:
             if event.state.connected != self.discord_state.connected:
                 log.info("Discord %s", "connected" if event.state.connected else "disconnected")
             self.discord_state = event.state
+        elif isinstance(event, MediaChanged):
+            self.media_state = event.state
 
     def _on_press(self, idx: int) -> None:
         layout = self.layout
@@ -170,8 +176,14 @@ class App:
         if layout.mic_mute_pad is not None and s.mic_muted is not None:
             frame[layout.mic_mute_pad] = grid.RED if s.mic_muted else grid.DIM_GREEN
         if layout.media:
-            for pad in layout.media.pads():
-                frame[pad] = layout.media.color
+            m, st = layout.media, self.media_state
+            for pad in m.pads():
+                if not st.available:
+                    frame[pad] = grid.DIM_GREY
+                elif pad == m.play_pause_pad and not st.playing:
+                    frame[pad] = grid.scale(m.color, PAUSED_BRIGHTNESS)
+                else:
+                    frame[pad] = m.color
         if layout.discord:
             d = self.discord_state
             # Deafened means nobody hears you either, so the mute pad goes red too.
@@ -242,6 +254,7 @@ def run(config_path: Path | None) -> None:
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, _sigterm)
 
+    media = Media()  # stateless to set up, so a config reload can add [media] live
     discord = None
     if layout.discord:
         cfg_dir = config.user_config_dir()
@@ -251,14 +264,16 @@ def run(config_path: Path | None) -> None:
     audio.watch(lambda s: events.put(AudioChanged(s)))  # also sends the initial state
     if discord:
         discord.watch(lambda s: events.put(DiscordChanged(s)))
+    media.watch(lambda s: events.put(MediaChanged(s)))
     log.info("Running. Ctrl+C to quit.")
     try:
         serve(watcher, layout, audio, events, LaunchpadDevice, launchpad_present, discord,
-              Media())
+              media)
     except KeyboardInterrupt:
         pass
     finally:
         audio.stop()
+        media.stop()
         if discord:
             discord.stop()
 
@@ -307,7 +322,7 @@ def _wait_for_device(events: "queue.Queue[Event]", app: App) -> None:
         event = events.get(timeout=DEVICE_POLL_S)
     except queue.Empty:
         return
-    if isinstance(event, (AudioChanged, DiscordChanged)):
+    if isinstance(event, (AudioChanged, DiscordChanged, MediaChanged)):
         app.handle(event)
 
 

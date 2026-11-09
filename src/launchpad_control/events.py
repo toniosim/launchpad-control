@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .integrations.discord import DiscordState
+from .integrations.media import MediaState
 from .integrations.pipewire import AudioState
 
 
@@ -43,4 +44,11 @@ class DiscordChanged:
     state: DiscordState
 
 
-Event = PadPress | PadRelease | PadPressure | ButtonChange | AudioChanged | DiscordChanged
+@dataclass(frozen=True)
+class MediaChanged:
+    """The active player started, paused, stopped or went away."""
+    state: MediaState
+
+
+Event = (PadPress | PadRelease | PadPressure | ButtonChange | AudioChanged | DiscordChanged
+         | MediaChanged)
