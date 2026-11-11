@@ -46,3 +46,11 @@ Original goals from Tonio are marked ⭐. Rough priority: **P1** = build first, 
 - ~~Hot-plug reconnect~~ done: `app.serve` waits for the device, repaints from carried state on replug
 - ~~systemd user service~~ done: `systemd/`, `scripts/install-service.sh`, `scripts/lpctl`, `scripts/update.sh`
 - Fake device for tests without hardware
+- **P3 Event-based change detection** instead of the remaining polls. Pad, PipeWire, media and Discord state already push into the event queue; these still poll:
+  - config file every 1s → inotify on the config *directory* (editors save by replacing the file). The stdlib has no inotify: use ~40 lines of `ctypes`, or `inotify_simple`
+  - pad presence every 2s → kernel uevents over `socket.AF_NETLINK` (stdlib), or inotify on `/dev/snd`
+  - wake from sleep (`SleepWatch`, checked each loop) → logind's `PrepareForSleep` D-Bus signal via a `gdbus monitor` subprocess, the same pattern as `pactl subscribe`
+  - Discord reconnect every 5s while it's closed → inotify on the `discord-ipc-*` socket directories
+  - Gain is latency (instant config reload and replug), not resources: polling costs only ~1.3 wakeups/s and 0.14% CPU now (see HANDOFF, "MIDI clock and resource use")
+  - Events can be missed, so check state at startup and after reconnects, and keep a slow fallback poll (30–60s), which also covers sleep detection
+  - Verify first: that uevents can be read without root, and whether the pad's in-place USB reset after resume emits any event
