@@ -52,6 +52,13 @@ A config error at startup exits with code 2, which the unit treats as "don't ret
 `lpctl logs`. Don't run a second copy by hand while the service is up (both would act on every
 press); use `lpctl dev` instead.
 
+## Suspend / resume and boot
+
+The kernel log (`journalctl -k`) shows two separate ways the pad gets lost around sleep and boot:
+
+- **Wake from suspend**: the kernel resets the pad in place (no unplug), so nothing looks wrong, but it comes back in the wrong mode with stale LEDs. The service notices the suspend (`CLOCK_BOOTTIME` vs `CLOCK_MONOTONIC`), waits 3s for USB to settle, then reopens the device, re-enters Programmer mode and repaints. No setup needed.
+- **Stuck unconfigured** (`usb 1-4: can't set config #1, error -32`): on every cold boot here, and now and then after resume, the kernel finds the pad but its firmware refuses to be configured, so it has no MIDI ports. **Software can't fix this**: USB resets and re-configuring were tried and none worked (0 of 6), and a reset can even cause it on a healthy pad. Only a power loss, i.e. unplugging it, clears it. The service just logs a warning saying so after 6s.
+
 ## Configuration
 
 The layout lives in `~/.config/launchpad-control/config.toml`. Without that file, the built-in

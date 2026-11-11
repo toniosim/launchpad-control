@@ -26,6 +26,9 @@ log = logging.getLogger(__name__)
 CONFIG_POLL_S = 1.0
 PAUSED_BRIGHTNESS = 0.25  # play/pause pad while the player is paused
 DEVICE_POLL_S = 2.0  # how often to check the Launchpad is still (or again) plugged in
+WAKE_GAP_S = 3.0  # more suspended time than this between two checks means the PC slept
+WAKE_SETTLE_S = 3.0  # after waking, give the USB bus and the pad this long before reopening
+STUCK_GRACE_S = 6.0  # on the USB bus but without MIDI ports for this long = stuck
 
 
 class AudioControl(Protocol):
@@ -237,7 +240,7 @@ class ConfigWatcher:
 
 
 def run(config_path: Path | None) -> None:
-    from .device import LaunchpadDevice, launchpad_present
+    from .device import LaunchpadDevice, launchpad_on_usb_bus, launchpad_present
     from .integrations.discord import Discord
     from .integrations.media import Media
     from .integrations.pipewire import PipeWire
@@ -268,7 +271,7 @@ def run(config_path: Path | None) -> None:
     log.info("Running. Ctrl+C to quit.")
     try:
         serve(watcher, layout, audio, events, LaunchpadDevice, launchpad_present, discord,
-              media)
+              media, StuckDeviceNotice(launchpad_on_usb_bus))
     except KeyboardInterrupt:
         pass
     finally:
@@ -278,21 +281,75 @@ def run(config_path: Path | None) -> None:
             discord.stop()
 
 
+class SleepWatch:
+    """Notices that the PC was suspended, using the gap between two kernel clocks.
+
+    CLOCK_BOOTTIME keeps counting during suspend and CLOCK_MONOTONIC does not, so their
+    difference grows only while asleep (unlike wall time, NTP can't fake it).
+    """
+
+    def __init__(self, boottime: Callable[[], float] | None = None,
+                 monotonic: Callable[[], float] = time.monotonic) -> None:
+        self._boot = boottime or (lambda: time.clock_gettime(time.CLOCK_BOOTTIME))
+        self._mono = monotonic
+        self._asleep = self._boot() - self._mono()
+
+    def woke(self) -> bool:
+        """True once per suspend/resume since the last call."""
+        asleep = self._boot() - self._mono()
+        slept, self._asleep = asleep - self._asleep, asleep
+        return slept > WAKE_GAP_S
+
+
+class StuckDeviceNotice:
+    """Says so, once per episode, when the Launchpad is on the USB bus but has no MIDI ports.
+
+    That is the kernel failing to configure it after boot/resume (`error -32`). Resets
+    don't clear it, only unplugging does, so the best we can do is tell the user why.
+    """
+
+    def __init__(self, on_bus: Callable[[], bool],
+                 clock: Callable[[], float] = time.monotonic) -> None:
+        self._on_bus, self._clock = on_bus, clock
+        self._stuck_since: float | None = None
+        self._told = False
+
+    def poll(self, connected: bool) -> None:
+        if connected or not self._on_bus():
+            self._stuck_since, self._told = None, False
+            return
+        now = self._clock()
+        if self._stuck_since is None:
+            self._stuck_since = now
+        if not self._told and now - self._stuck_since >= STUCK_GRACE_S:
+            self._told = True
+            log.warning("The Launchpad is on the USB bus but the kernel never configured it "
+                        "(see `journalctl -k | grep 'set config'`). Unplug and replug it.")
+
+
 def serve(watcher: ConfigWatcher, layout: Layout, audio, events: "queue.Queue[Event]",
           open_device: Callable[[], ContextManager[Device]],
           present: Callable[[], bool], discord: DiscordControl | None = None,
-          media: MediaControl | None = None) -> None:
+          media: MediaControl | None = None, stuck: StuckDeviceNotice | None = None,
+          sleep_watch: SleepWatch | None = None) -> None:
     """Run until interrupted, surviving the Launchpad being absent, unplugged or replugged.
 
     The App (state and layout) carries over between device sessions, so a replugged
-    Launchpad is repainted from the current state straight away.
+    Launchpad is repainted from the current state straight away. After the PC wakes from
+    suspend the session is dropped and reopened: the kernel has reset the pad by then, but
+    since it never left the USB bus, no unplug is seen and it would otherwise stay in the
+    wrong mode with stale LEDs.
     """
     app = App(None, audio, layout, discord, media)
+    sleep_watch = sleep_watch or SleepWatch()
     waiting_logged = False
     while True:
         stack = ExitStack()
         try:
-            if not present():
+            connected = present()
+            if stuck is not None:
+                stuck.poll(connected)
+            if not connected:
                 raise LookupError("not connected")
             dev = stack.enter_context(open_device())
         except Exception as e:
@@ -306,11 +363,14 @@ def serve(watcher: ConfigWatcher, layout: Layout, audio, events: "queue.Queue[Ev
             log.info("Launchpad connected")
             app.attach(dev)
             dev.set_event_handler(events.put)
+            sleep_watch.woke()  # a suspend before this point is already behind us
             try:
                 app.refresh()
-                _session(app, watcher, audio, events, present)
+                woke = _session(app, watcher, audio, events, present, sleep_watch)
             finally:
                 app.attach(None)
+        if woke:
+            _settle(events, app, WAKE_SETTLE_S)
 
 
 def _wait_for_device(events: "queue.Queue[Event]", app: App) -> None:
@@ -322,13 +382,33 @@ def _wait_for_device(events: "queue.Queue[Event]", app: App) -> None:
         event = events.get(timeout=DEVICE_POLL_S)
     except queue.Empty:
         return
+    _track_state(app, event)
+
+
+def _track_state(app: App, event: Event | None) -> None:
+    """Apply state updates only; presses and buttons are meaningless without a live device."""
     if isinstance(event, (AudioChanged, DiscordChanged, MediaChanged)):
         app.handle(event)
 
 
+def _settle(events: "queue.Queue[Event]", app: App, seconds: float) -> None:
+    """Keep tracking state for `seconds` without a device (lets a woken USB bus settle)."""
+    deadline = time.monotonic() + seconds
+    while (left := deadline - time.monotonic()) > 0:
+        try:
+            event = events.get(timeout=left)
+        except queue.Empty:
+            return
+        _track_state(app, event)
+
+
 def _session(app: App, watcher: ConfigWatcher, audio, events: "queue.Queue[Event]",
-             present: Callable[[], bool]) -> None:
-    """Handle events until the device disappears. Returns on disconnect; KeyboardInterrupt exits."""
+             present: Callable[[], bool], sleep_watch: SleepWatch) -> bool:
+    """Handle events until the device disappears or the PC wakes from suspend.
+
+    Returns True after a wake (the caller reopens the device) and False on a disconnect;
+    KeyboardInterrupt exits.
+    """
     now = time.monotonic()
     next_config = now + CONFIG_POLL_S
     next_present = now + DEVICE_POLL_S
@@ -340,13 +420,17 @@ def _session(app: App, watcher: ConfigWatcher, audio, events: "queue.Queue[Event
                 log.debug("%s", event)
             except queue.Empty:
                 pass
+            if sleep_watch.woke():
+                log.info("PC woke from suspend; reopening the Launchpad")
+                _track_state(app, event)  # a press from before the nap must not act
+                return True
             app.step(event)
             now = time.monotonic()
             if now >= next_present:
                 next_present = now + DEVICE_POLL_S
                 if not present():
                     log.warning("Launchpad disconnected")
-                    return
+                    return False
             if now >= next_config:
                 next_config = now + CONFIG_POLL_S
                 _maybe_reload(watcher, app, audio)
@@ -354,7 +438,7 @@ def _session(app: App, watcher: ConfigWatcher, audio, events: "queue.Queue[Event
             if present():
                 raise  # a real bug, not an unplug
             log.warning("Launchpad disconnected")
-            return
+            return False
 
 
 def _maybe_reload(watcher: ConfigWatcher, app: App, audio) -> None:
@@ -394,7 +478,7 @@ def init_config() -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser =argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-v", "--verbose", action="store_true", help="log every event")
     parser.add_argument("-c", "--config", type=Path,
                         help=f"config file (default: {config.user_config_path()}, "

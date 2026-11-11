@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 from typing import Callable, Iterable, Protocol
 
 import mido
@@ -50,6 +51,30 @@ def launchpad_present() -> bool:
         return True
     except LookupError:
         return False
+
+
+# --- USB bus visibility ------------------------------------------------------------
+# After boot, and occasionally after suspend, the kernel enumerates the Launchpad but its
+# firmware refuses SET_CONFIGURATION ("can't set config #1, error -32"). It then sits on
+# the bus with no MIDI ports. Software can't fix that: USB resets and re-configuring were
+# tried (0 of 6 worked, and resetting a healthy pad can itself trigger it). Only losing
+# power, i.e. unplugging it, clears it. All we can do is notice and say so.
+
+LAUNCHPAD_USB_ID = ("1235", "0123")  # Focusrite - Novation, Launchpad Pro MK3
+SYSFS_USB = Path("/sys/bus/usb/devices")
+
+
+def launchpad_on_usb_bus(sysfs: Path = SYSFS_USB) -> bool:
+    """True if the Launchpad is on the USB bus at all, configured or not (read-only, no root)."""
+    vid, pid = LAUNCHPAD_USB_ID
+    for entry in sorted(sysfs.iterdir()) if sysfs.is_dir() else []:
+        try:
+            if ((entry / "idVendor").read_text().strip() == vid
+                    and (entry / "idProduct").read_text().strip() == pid):
+                return True
+        except OSError:
+            continue  # interface entries (1-4:1.0) have no idVendor; devices come and go
+    return False
 
 
 def parse_message(msg: mido.Message) -> Event | None:
