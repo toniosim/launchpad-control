@@ -22,6 +22,8 @@ log = logging.getLogger(__name__)
 
 SYSEX_HEADER = [0x00, 0x20, 0x29, 0x02, 0x0E]  # Novation, LP Pro MK3 (mido adds F0/F7)
 MAX_SPECS_PER_SYSEX = 106
+LAUNCHPAD_USB_ID = ("1235", "0123")  # Focusrite - Novation, Launchpad Pro MK3
+PROC_ASOUND = Path("/proc/asound")
 
 EventHandler = Callable[[Event], None]
 
@@ -44,13 +46,23 @@ def find_port(names: list[str]) -> str:
     raise LookupError(f"Launchpad Pro MK3 not found. Ports seen: {names}")
 
 
-def launchpad_present() -> bool:
-    """True while the Launchpad's MIDI port is enumerated (used to spot unplug/replug)."""
-    try:
-        find_port(mido.get_input_names())
-        return True
-    except LookupError:
-        return False
+def launchpad_present(asound: Path = PROC_ASOUND) -> bool:
+    """True while the Launchpad's ALSA sound card exists (used to spot unplug/replug).
+
+    This is polled every 2s, so it reads /proc instead of listing MIDI ports. Listing
+    ports (mido.get_input_names) walks every ALSA sequencer client, and each empty
+    client slot makes the kernel wait on a driver-autoload worker: ~440 context switches
+    per call, against none here. The card can appear a moment before its MIDI ports do;
+    opening the device then fails and is retried.
+    """
+    want = ":".join(LAUNCHPAD_USB_ID)
+    for usbid in asound.glob("card*/usbid"):  # only USB cards have one
+        try:
+            if usbid.read_text().strip() == want:
+                return True
+        except OSError:
+            continue  # card removed while we looked
+    return False
 
 
 # --- USB bus visibility ------------------------------------------------------------
@@ -60,7 +72,6 @@ def launchpad_present() -> bool:
 # tried (0 of 6 worked, and resetting a healthy pad can itself trigger it). Only losing
 # power, i.e. unplugging it, clears it. All we can do is notice and say so.
 
-LAUNCHPAD_USB_ID = ("1235", "0123")  # Focusrite - Novation, Launchpad Pro MK3
 SYSFS_USB = Path("/sys/bus/usb/devices")
 
 
@@ -92,6 +103,21 @@ def parse_message(msg: mido.Message) -> Event | None:
     return None
 
 
+def _drop_clock(port: mido.ports.BaseInput) -> None:
+    """Have rtmidi discard MIDI clock before it reaches Python.
+
+    The pad sends clock all the time (48 messages/s at its default 120 BPM, unless
+    "Transmit Clock" is off in its MIDI settings). mido only filters active sensing, so
+    each tick would otherwise take the GIL and build a Message just to be ignored.
+    mido has no public API for this, hence the private `_rt` (the rtmidi.MidiIn).
+    """
+    try:
+        port._rt.ignore_types(sysex=False, timing=True, active_sense=True)  # type: ignore[attr-defined]
+    except AttributeError:
+        log.warning("Couldn't filter MIDI clock in rtmidi (mido internals changed?); "
+                    "harmless, but uses more CPU")
+
+
 def led_sysex_payloads(specs: list[LedSpec]) -> list[list[int]]:
     """Build SysEx data lists (header included, no F0/F7), max 106 RGB specs each."""
     payloads = []
@@ -117,6 +143,7 @@ class LaunchpadDevice:
         self._out = mido.open_output(out_name)
         try:
             self._in = mido.open_input(in_name, callback=self._on_message)
+            _drop_clock(self._in)
             self._sysex(0x0E, 0x01)  # Programmer mode
         except Exception:
             self.close()

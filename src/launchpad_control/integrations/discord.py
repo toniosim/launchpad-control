@@ -20,9 +20,6 @@ import os
 import socket
 import struct
 import threading
-import urllib.error
-import urllib.parse
-import urllib.request
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -145,6 +142,12 @@ def connect_socket() -> socket.socket:
 # ---- OAuth ---------------------------------------------------------------------------
 
 def http_token_request(form: Mapping[str, str]) -> Payload:
+    # Imported here, not at the top: urllib.request pulls in ssl, http.client and email
+    # (~5 MB resident), and the daemon only needs it for a rare token exchange/refresh.
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+
     req = urllib.request.Request(
         TOKEN_URL, data=urllib.parse.urlencode(form).encode(),
         headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": USER_AGENT})

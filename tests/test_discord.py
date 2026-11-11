@@ -291,3 +291,14 @@ def test_socket_candidates_include_flatpak():
     assert paths[0].as_posix() == "/run/user/1000/discord-ipc-0"
     assert any(p.as_posix() == "/run/user/1000/app/com.discordapp.Discord/discord-ipc-0"
                for p in paths)
+
+
+def test_urllib_not_imported_until_needed():
+    """urllib.request drags in ssl and friends (~5 MB); only token requests need it."""
+    import subprocess
+    import sys
+    code = ("import sys, launchpad_control.app; "
+            "print(sorted(m for m in ('urllib.request', 'ssl') if m in sys.modules))")
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                         check=True).stdout
+    assert out.strip() == "[]"
