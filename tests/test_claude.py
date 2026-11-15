@@ -10,13 +10,14 @@ import pytest
 
 from launchpad_control import config, grid
 from launchpad_control.app import (BANK_ACTIVE, BANK_INACTIVE, CLAUDE_ASKING, CLAUDE_BLINK_S,
-                                   CLAUDE_FRAME_S, CLAUDE_WORKING, App)
+                                   CLAUDE_DONE, CLAUDE_FRAME_S, CLAUDE_WORKING, App)
 from launchpad_control.config import ConfigError
 from launchpad_control.events import AudioChanged, ButtonChange
 from launchpad_control.fake_device import FakeDevice
 from launchpad_control.integrations import claude
 from launchpad_control.integrations.claude import (ClaudeListener, HookEvent, Sessions,
-                                                   parse_hook, status_after)
+                                                   asks_user, find_predecessor, parse_hook,
+                                                   status_after)
 from launchpad_control.integrations.pipewire import AudioState
 
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
@@ -112,7 +113,7 @@ def test_hook_script_forwards_and_stays_silent(tmp_path):
                            env={"XDG_RUNTIME_DIR": str(tmp_path)}, timeout=10)
         assert (r.returncode, r.stdout, r.stderr) == (0, "", "")
         assert got.get(timeout=2) == HookEvent("Notification", "s", "/p", "",
-                                               "permission_prompt", "m" * 200)
+                                               "permission_prompt", "m" * 200, "/t")
     finally:
         listener.stop()
 
@@ -352,3 +353,79 @@ def test_stale_sessions_are_forgotten():
     clock.t += 100
     app.step()
     assert app.claude.items == ()
+
+
+# ---- finished: asking or not ----
+
+@pytest.mark.parametrize("reply, asks", [
+    ("Committed as 5f01ee3.", False),
+    ("Done.\n\nWant me to commit?", True),
+    ("Want me to commit?\n\nOtherwise it's all done.", False),  # only the last paragraph
+    ("Ran the tests.\n\nShould I deploy it as well", True),
+    ("Fixed.\nNeeds input: which port?", True),
+    ("", False),
+])
+def test_asks_user(reply, asks):
+    assert asks_user(reply) == asks
+
+
+def test_stop_status_follows_the_reply():
+    assert status_after(hook("Stop", last_message="All done."), claude.WORKING) == claude.DONE
+    assert status_after(hook("Stop", last_message="Commit?"), claude.WORKING) == \
+        claude.NEEDS_INPUT
+    assert status_after(hook("Stop"), claude.WORKING) == claude.NEEDS_INPUT  # no text sent
+
+
+def test_finished_row_is_calm_and_doesnt_wake_idle():
+    app, dev, _, clock = make_app()
+    to_claude(dev)
+    dev.emit(hook("Stop", "a", last_message="All done."))
+    assert row(dev, 8)[0] == CLAUDE_DONE
+    assert dev.leds[102] == BANK_ACTIVE  # no blinking
+    clock.t += 60
+    app.step()
+    assert app.idle is not None
+    dev.emit(hook("UserPromptSubmit", "b"))
+    dev.emit(hook("Stop", "b", last_message="Finished."))
+    clock.t += 60
+    app.step()
+    assert app.idle is not None
+    dev.emit(hook("Stop", "a", last_message="Finished too."))
+    assert app.idle is not None
+
+
+# ---- a session reopened under a new id ----
+
+def transcript(tmp_path, *ids):
+    f = tmp_path / "new.jsonl"
+    f.write_text("\n".join([json.dumps({"type": "mode", "sessionId": "new"})]
+                           + [json.dumps({"session_id": i, "text": "x"}) for i in ids]))
+    return str(f)
+
+
+def test_find_predecessor(tmp_path):
+    path = transcript(tmp_path, "old", "new")
+    assert find_predecessor(path, {"old", "other"}) == "old"
+    assert find_predecessor(path, {"other"}) is None
+    assert find_predecessor(str(tmp_path / "missing"), {"old"}) is None
+    assert find_predecessor("", {"old"}) is None
+
+
+def test_sessions_rename_keeps_position():
+    s = Sessions().apply(hook("Stop", "a"), 0).apply(hook("UserPromptSubmit", "b"), 1)
+    s = s.rename("a", "a2")
+    assert [(x.id, x.status) for x in s.items] == [("a2", claude.NEEDS_INPUT),
+                                                    ("b", claude.WORKING)]
+
+
+def test_reopened_session_takes_over_its_row(tmp_path):
+    app, dev, _, _ = make_app()
+    dev.emit(hook("UserPromptSubmit", "first"))
+    dev.emit(hook("Stop", "old", last_message="Done."))
+    dev.emit(hook("SessionStart", "new", source="resume",
+                  transcript=transcript(tmp_path, "old")))
+    assert [(x.id, x.status) for x in app.claude.items] == [("first", claude.WORKING),
+                                                             ("new", claude.DONE)]
+    dev.emit(hook("SessionStart", "new", source="resume",  # again: nothing changes
+                  transcript=transcript(tmp_path, "first")))
+    assert [x.id for x in app.claude.items] == ["first", "new"]

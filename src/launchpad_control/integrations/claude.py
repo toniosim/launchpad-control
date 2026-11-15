@@ -3,14 +3,15 @@
 Each hook runs `scripts/claude_hook.py`, which forwards a few fields of the hook's JSON
 as one datagram to a Unix socket in $XDG_RUNTIME_DIR. `ClaudeListener` receives them
 (event driven: one thread blocked in recv, no polling) and `Sessions` turns them into a
-status per session: ready, working, or needs input (Claude Code's own term for "your
-turn": a permission prompt, a question, or a finished turn waiting for your reply).
+status per session: ready, working, needs input (a permission prompt, a question, or a
+reply that ends by asking you something) or done (finished, nothing asked).
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
+import re
 import socket
 import threading
 from dataclasses import dataclass, field, replace
@@ -19,7 +20,7 @@ from typing import Callable
 
 log = logging.getLogger(__name__)
 
-READY, WORKING, NEEDS_INPUT = "ready", "working", "needs_input"
+READY, WORKING, NEEDS_INPUT, DONE = "ready", "working", "needs_input", "done"
 
 # Tools that stop and wait for the user without a permission prompt.
 ASKING_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
@@ -28,6 +29,13 @@ ASKING_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
 ASKING_NOTIFICATIONS = {"permission_prompt", "elicitation_dialog"}
 
 MAX_DATAGRAM = 64 * 1024
+
+# A finished reply "asks" when its last paragraph has a question mark or one of these.
+# (Claude Code's own agent view uses similar patterns plus a classifier we don't get.)
+ASKING = re.compile(r"\?|\b(?:want|like) me to\b|\b(?:shall|should) I\b|\bneeds input:",
+                    re.IGNORECASE)
+# How far into a transcript to look for the session it was forked from.
+PREDECESSOR_SCAN_BYTES = 4 * 1024 * 1024
 
 
 def socket_path() -> Path:
@@ -44,6 +52,9 @@ class HookEvent:
     tool: str = ""      # tool_name (PreToolUse/PostToolUse)
     notification: str = ""  # notification_type (Notification)
     message: str = ""   # Notification message, used when notification_type is missing
+    transcript: str = ""    # transcript_path
+    source: str = ""        # SessionStart: startup, resume, clear, compact
+    last_message: str = ""  # Stop: the tail of Claude's final reply ("" = not sent)
 
 
 def parse_hook(data: bytes) -> HookEvent | None:
@@ -61,7 +72,34 @@ def parse_hook(data: bytes) -> HookEvent | None:
         v = d.get(key)
         return v if isinstance(v, str) else ""
     return HookEvent(event, sid, s("cwd"), s("tool_name"), s("notification_type"),
-                     s("message"))
+                     s("message"), s("transcript_path"), s("source"),
+                     s("last_assistant_message"))
+
+
+def asks_user(reply: str) -> bool:
+    """Does a finished reply end by asking the user something? Looks at the last paragraph."""
+    paragraphs = [p for p in re.split(r"\n\s*\n", reply.strip()) if p.strip()]
+    return bool(paragraphs) and ASKING.search(paragraphs[-1]) is not None
+
+
+def find_predecessor(transcript: str, known: set[str]) -> str | None:
+    """Which known session a new one continues, if any.
+
+    Reopening a conversation from Claude Code's session list can give it a new session
+    id. The new transcript then starts with copies of the old messages, which still carry
+    the old id, so the first known id found in it (other than its own) is the one it
+    replaces.
+    """
+    if not transcript or not known:
+        return None
+    pattern = re.compile(rb'"session_?[iI]d"\s*:\s*"(' +
+                         b"|".join(re.escape(k.encode()) for k in known) + rb')"')
+    try:
+        with open(transcript, "rb") as f:
+            m = pattern.search(f.read(PREDECESSOR_SCAN_BYTES))
+    except OSError:
+        return None
+    return m.group(1).decode() if m else None
 
 
 def status_after(event: HookEvent, current: str | None) -> str | None:
@@ -89,7 +127,10 @@ def status_after(event: HookEvent, current: str | None) -> str | None:
             return NEEDS_INPUT
         return current or READY
     if e == "Stop":
-        return NEEDS_INPUT  # finished its turn: waiting for your reply
+        # Without the reply text (older Claude Code), assume it's waiting on you.
+        if event.last_message and not asks_user(event.last_message):
+            return DONE
+        return NEEDS_INPUT
     return current or READY  # SubagentStop, PreCompact, anything newer: no change
 
 
@@ -118,6 +159,11 @@ class Sessions:
 
     def get(self, session_id: str) -> Session | None:
         return next((s for s in self.items if s.id == session_id), None)
+
+    def rename(self, old_id: str, new_id: str) -> "Sessions":
+        """A session continues under a new id: keep its row, status and position."""
+        return Sessions(tuple(replace(s, id=new_id) if s.id == old_id else s
+                              for s in self.items if s.id != new_id))
 
     def dismiss(self, session_id: str) -> "Sessions":
         return Sessions(tuple(s for s in self.items if s.id != session_id))

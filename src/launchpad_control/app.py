@@ -43,6 +43,7 @@ BANK_INACTIVE: grid.RGB = (5, 5, 5)
 # Claude bank: one row per session, oldest at the top.
 CLAUDE_WORKING = grid.ORANGE
 CLAUDE_ASKING: grid.RGB = (127, 100, 0)   # yellow: waiting for you
+CLAUDE_DONE = grid.GREEN
 CLAUDE_READY: grid.RGB = (20, 20, 20)
 CLAUDE_FRAME_S = 0.1     # animation step on the Claude bank
 CLAUDE_BLINK_S = 0.5     # bank button blink (on, then off) while a session waits for you
@@ -113,13 +114,24 @@ class App:
             if event.value and event.cc in BANK_BUTTONS:
                 self._switch_bank(BANK_BUTTONS[event.cc])
         elif isinstance(event, HookEvent):
+            if event.event == "SessionStart":
+                log.info("Claude session %s started (%s) in %s", event.session_id[:8],
+                         event.source or "?", event.cwd)
+                if self.claude.get(event.session_id) is None:
+                    known = {s.id for s in self.claude.items}
+                    old = claude.find_predecessor(event.transcript, known)
+                    if old:
+                        log.info("Claude session %s continues as %s", old[:8],
+                                 event.session_id[:8])
+                        self.claude = self.claude.rename(old, event.session_id)
             before = self.claude.get(event.session_id)
             self.claude = self.claude.apply(event, self.clock())
             after = self.claude.get(event.session_id)
             if (before and before.status) != (after and after.status):
                 log.info("Claude session in %s: %s", event.cwd or event.session_id[:8],
                          after.status if after else "ended")
-                if self.bank == CLAUDE and after and after.status != claude.READY:
+                if self.bank == CLAUDE and after and after.status in (claude.WORKING,
+                                                                      claude.NEEDS_INPUT):
                     self._wake()  # something to look at: show the bank again
         elif isinstance(event, AudioChanged):
             if event.state.active_app != self.state.active_app and self.layout.active_app:
@@ -306,6 +318,10 @@ class App:
                 b = 0.1 + 0.9 * (0.5 - 0.5 * math.cos(2 * math.pi * phase))
                 for col in range(1, 9):
                     frame[grid.idx(row, col)] = grid.scale(CLAUDE_ASKING, b)
+            elif st == claude.DONE:
+                frame[grid.idx(row, 1)] = CLAUDE_DONE
+                for col in range(2, 9):
+                    frame[grid.idx(row, col)] = grid.scale(CLAUDE_DONE, 0.06)
             else:
                 frame[grid.idx(row, 1)] = CLAUDE_READY
         return frame

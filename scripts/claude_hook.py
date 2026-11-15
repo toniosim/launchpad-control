@@ -13,7 +13,8 @@ import os
 import socket
 import sys
 
-FIELDS = ("hook_event_name", "session_id", "cwd", "tool_name", "notification_type")
+FIELDS = ("hook_event_name", "session_id", "cwd", "tool_name", "notification_type",
+          "transcript_path", "source")
 
 
 def main() -> None:
@@ -22,6 +23,8 @@ def main() -> None:
         msg = {k: data[k] for k in FIELDS if isinstance(data.get(k), str)}
         if isinstance(data.get("message"), str):
             msg["message"] = data["message"][:200]
+        if isinstance(data.get("last_assistant_message"), str):  # Stop: is it a question?
+            msg["last_assistant_message"] = data["last_assistant_message"][-400:]
         base = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
         with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
             s.setblocking(False)  # if the daemon is wedged, drop the event rather than wait
