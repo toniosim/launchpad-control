@@ -22,8 +22,8 @@ Original goals from Tonio are marked ⭐. Rough priority: **P1** = build first, 
 - **P3** Push-to-talk, camera/screen-share toggles (RPC where supported, else uinput keybinds)
 
 ## Status display (LEDs as a dashboard)
-- **P2 Home server grid**: one pad per container/service, green = healthy, red = down; hold a pad to restart the service
-- **P2 Home Assistant**: lights and scenes, pad color = actual light color
+- **P2 Home server grid**: one pad per container/service, green = healthy, red = down; hold a pad to restart the service. **On hold** (2026-11-14): plan, options (Dockhand API vs small agent vs HA) and open decisions in `HOME_SERVER.md`
+- **P2 Home Assistant**: lights and scenes, pad color = actual light color. Not a confirmed want yet: Tonio only uses HA for lights today and will revisit what's worth putting on the pad. Giving HA Docker access for the server grid is unwanted for now (see `HOME_SERVER.md`)
 - **P2 Claude Code / agent stack alerts**: ✅ Claude bank (mascot that walks/waves + one pip per session, via hooks + Unix socket; `integrations/claude.py`). Still open: tap to focus that terminal (hard on Wayland/COSMIC), show which project a pip is (e.g. colour per cwd), a sound or main-bank pad when a session needs you
 - **P2 Test/CI status**: a row of pads shows pipeline pass/fail; tap to run a local test suite
 - **P3 Notifications**: meeting countdown, Pomodoro timer that drains the grid
