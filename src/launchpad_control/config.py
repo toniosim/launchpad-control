@@ -80,7 +80,7 @@ class IdleLayout:
 
 @dataclass(frozen=True)
 class ClaudeLayout:
-    """The Claude Code bank: one row per session, fed by Claude Code hooks."""
+    """The Claude Code bank: a mascot plus one pip per session, fed by Claude Code hooks."""
     stale_after: float = 2 * 3600  # forget a session silent this long (killed, no SessionEnd)
 
 

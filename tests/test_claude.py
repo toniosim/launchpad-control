@@ -8,9 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from launchpad_control import config, grid
+from launchpad_control import config, grid, mascot
 from launchpad_control.app import (BANK_ACTIVE, BANK_INACTIVE, CLAUDE_ASKING, CLAUDE_BLINK_S,
-                                   CLAUDE_DONE, CLAUDE_FRAME_S, CLAUDE_WORKING, App)
+                                   CLAUDE_DONE, CLAUDE_FRAME_S, CLAUDE_READY, CLAUDE_WORKING,
+                                   App)
 from launchpad_control.config import ConfigError
 from launchpad_control.events import AudioChanged, ButtonChange
 from launchpad_control.fake_device import FakeDevice
@@ -220,32 +221,89 @@ def test_pads_act_on_the_visible_bank_only():
     assert audio.calls == []
 
 
-def test_sessions_render_as_rows():
+def pips(dev):
+    return row(dev, 1)
+
+
+def critter(dev):
+    """The grid above the pips."""
+    return {i: c for i, c in dev.leds.items() if 21 <= i <= 88}
+
+
+def advance(app, clock, frames=1):
+    for _ in range(frames):
+        clock.t += app.seconds_until_tick()
+        app.step()
+
+
+def test_mascot_is_drawn_dim_without_sessions_and_bright_with_them():
+    app, dev, _, _ = make_app()
+    to_claude(dev)
+    assert critter(dev) == mascot.draw(mascot.STAND, mascot.SLEEPY)
+    dev.emit(hook("SessionStart", "a"))
+    assert critter(dev) == mascot.draw(mascot.STAND)
+    assert app.seconds_until_tick() > 1  # standing still: no animation wakeups
+
+
+def test_sessions_show_as_pips_oldest_first():
+    app, dev, _, _ = make_app()
+    to_claude(dev)
+    dev.emit(hook("UserPromptSubmit", "a"))
+    dev.emit(hook("Stop", "b", last_message="Done."))
+    dev.emit(hook("PermissionRequest", "c"))
+    dev.emit(hook("SessionStart", "d"))
+    p = pips(dev)
+    assert p[0] == CLAUDE_WORKING and p[1] == CLAUDE_DONE and p[3] == CLAUDE_READY
+    assert p[2] in (CLAUDE_ASKING, grid.scale(CLAUDE_ASKING, 0.1))
+    assert p[4:] == [None] * 4
+
+
+def test_mascot_walks_while_working():
     app, dev, _, clock = make_app()
+    to_claude(dev)
+    dev.emit(hook("UserPromptSubmit", "a"))
+    assert 0 < app.seconds_until_tick() <= CLAUDE_FRAME_S + 0.01
+    seen = []
+    for _ in range(len(mascot.WALK)):
+        seen.append(critter(dev))
+        advance(app, clock)
+    assert seen[0] != seen[1]
+    assert sorted(map(sorted, seen)) == sorted(sorted(mascot.draw(p)) for p in mascot.WALK)
+    assert all(c != mascot.ALERT for f in seen for c in f.values())
+    dev.emit(hook("Stop", "a", last_message="Done."))
+    assert critter(dev) == mascot.draw(mascot.STAND)  # finished: stands still
+
+
+def test_mascot_waves_when_a_chat_needs_input_even_if_another_works():
+    app, dev, _, clock = make_app()
+    to_claude(dev)
+    dev.emit(hook("UserPromptSubmit", "a"))
+    dev.emit(hook("UserPromptSubmit", "b"))
+    dev.emit(hook("Stop", "b", last_message="Want me to push?"))
+    seen = set()
+    for _ in range(4):
+        seen.add(tuple(sorted(critter(dev).items())))
+        advance(app, clock)
+    assert seen == {tuple(sorted(mascot.draw(p).items())) for p in mascot.WAVE}
+    # the alert light, the pip and the bank button blink together
+    for _ in range(4):
+        lit = mascot.ALERT in critter(dev).values()
+        assert (pips(dev)[1] == CLAUDE_ASKING) == lit == (dev.leds[102] == CLAUDE_ASKING)
+        advance(app, clock)
+
+
+def test_tap_a_pip_clears_finished_sessions_but_not_working_ones():
+    app, dev, _, _ = make_app()
     to_claude(dev)
     dev.emit(hook("UserPromptSubmit", "a"))
     dev.emit(hook("Stop", "b"))
-    dev.emit(hook("PermissionRequest", "c"))
-    dev.emit(hook("SessionStart", "d"))
-    top, second, third, fourth = row(dev, 8), row(dev, 7), row(dev, 6), row(dev, 5)
-    assert CLAUDE_WORKING in top  # the comet's head
-    for r in (second, third):  # finished turn and permission prompt look the same
-        assert len(set(r)) == 1 and r[0] is not None  # whole row, one pulse level
-        assert r[0][1] > r[0][2]  # yellow-ish
-    assert fourth[0] is not None and fourth[1:] == [None] * 7
-    assert row(dev, 4) == [None] * 8
-
-
-def test_working_comet_moves_with_time():
-    app, dev, _, clock = make_app()
-    to_claude(dev)
-    dev.emit(hook("UserPromptSubmit", "a"))
-    before = row(dev, 8)
-    wait = app.seconds_until_tick()
-    assert 0 < wait <= CLAUDE_FRAME_S + 0.01
-    clock.t += wait
-    app.step()
-    assert row(dev, 8) != before
+    dev.press(grid.idx(1, 1))
+    dev.press(grid.idx(1, 2))
+    assert [s.id for s in app.claude.items] == ["a"]
+    dev.press(grid.idx(1, 5))   # no session there
+    dev.press(grid.idx(4, 4))   # the mascot: nothing
+    assert len(app.claude.items) == 1
+    assert pips(dev)[1:] == [None] * 7
 
 
 def test_no_animation_wakeups_when_nothing_moves():
@@ -266,18 +324,6 @@ def test_bank_button_blinks_while_a_session_needs_input():
     clock.t += CLAUDE_BLINK_S
     app.step()
     assert {first, dev.leds[102]} == {CLAUDE_ASKING, grid.scale(CLAUDE_ASKING, 0.1)}
-
-
-def test_tap_clears_finished_rows_but_not_working_ones():
-    app, dev, _, _ = make_app()
-    to_claude(dev)
-    dev.emit(hook("UserPromptSubmit", "a"))
-    dev.emit(hook("Stop", "b"))
-    dev.press(grid.idx(8, 4))
-    dev.press(grid.idx(7, 4))
-    assert [s.id for s in app.claude.items] == ["a"]
-    dev.press(grid.idx(3, 1))  # empty row: nothing
-    assert len(app.claude.items) == 1
 
 
 def test_no_idle_on_the_claude_bank_while_a_session_works():
@@ -380,7 +426,7 @@ def test_finished_row_is_calm_and_doesnt_wake_idle():
     app, dev, _, clock = make_app()
     to_claude(dev)
     dev.emit(hook("Stop", "a", last_message="All done."))
-    assert row(dev, 8)[0] == CLAUDE_DONE
+    assert pips(dev)[0] == CLAUDE_DONE
     assert dev.leds[102] == BANK_ACTIVE  # no blinking
     clock.t += 60
     app.step()

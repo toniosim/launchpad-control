@@ -14,7 +14,7 @@ Turns the 8×8 RGB pad grid into a control surface for the desktop: per-app volu
 - ✅ **Media controls** (bottom row, pads 16 / 17 / 18, blue): previous, play/pause, next for the active player via `playerctl` (MPRIS). The LEDs follow the real player state: all three blue while a player exists, play/pause dims while paused, all grey when no player is running (event driven via `playerctl --follow status`, no polling). With several players running, `playerctl` picks one; `playerctld` makes it the most recently active. Configure under `[media]`.
 - ✅ **Idle mode**: after 5 minutes without a press, the grid plays an animation picked at random: Conway's Game of Life (8×8 torus, colour = cell age, reseeds when it dies out or loops) or Matrix-style rain. Any press wakes it and does nothing else. On the Claude bank it waits while a session is working, and wakes when a session starts working or needs you. Set `[idle] after`/`mode`/`interval` in the config, or remove the section to disable.
 - ✅ **Banks**: the row of buttons just below the grid switches the whole grid between views. Button 1 = main (everything above), button 2 = Claude Code. The lit button is the active bank. Only shown when more than one bank is enabled.
-- ✅ **Claude Code bank**: one row per running Claude Code session (oldest on top), fed by Claude Code hooks: orange comet = working, pulsing yellow = needs you (permission prompt, question, or its reply ends by asking you something), green = finished with nothing asked. The bank button turns orange while any session works and blinks yellow when one needs you, from any bank. Setup below.
+- ✅ **Claude Code bank**: a pixel critter (after Claude Code's terminal mascot) fills the grid, fed by Claude Code hooks: it walks in place while any session works, waves with a yellow light over its head when a chat needs you (permission prompt, question, or its reply ends by asking you something), and stands still otherwise (dimmed with no sessions). The bottom row has one pip per session, oldest on the left: orange = working, blinking yellow = needs you, green = finished with nothing asked, dim white = started. The bank button turns orange while any session works and blinks yellow when one needs you, from any bank. Setup below.
 - All LEDs follow the real PipeWire state, including changes made elsewhere (keyboard, panel, pavucontrol).
 - ✅ **Config file**: layout, colours and app matching live in TOML (see below), reloaded live.
 - ✅ **Runs in the background** as a systemd user service, survives unplug/replug, one-command updates (see below).
@@ -124,16 +124,19 @@ Running it again doesn't duplicate anything, and your other hooks are kept. New 
 sessions pick the hooks up (already-running ones did too, in testing). Enable the bank with a `[claude]` section in the config (the
 packaged default has one).
 
-| Row looks like | Meaning | Hooks |
+The critter shows the overall state: waving (needs you) beats walking (working), and it stands
+still when neither. Each session's pip on the bottom row shows its own:
+
+| Pip / critter | Meaning | Hooks |
 |---|---|---|
-| orange comet sweeping across | working | `UserPromptSubmit`, `PostToolUse` |
-| whole row pulsing yellow | needs you: permission prompt, question, or a reply whose last paragraph asks something (`?`, "want me to", "should I") | `PermissionRequest`, `Notification` (permission), `PreToolUse` for `AskUserQuestion` / `ExitPlanMode`, `Stop` |
-| green first pad, dim green rest | finished, nothing asked (doesn't blink the bank button or wake idle) | `Stop` |
-| dim white first pad | started, no prompt yet | `SessionStart` |
+| orange pip, critter walks | working | `UserPromptSubmit`, `PostToolUse` |
+| blinking yellow pip, critter waves | needs you: permission prompt, question, or a reply whose last paragraph asks something (`?`, "want me to", "should I") | `PermissionRequest`, `Notification` (permission), `PreToolUse` for `AskUserQuestion` / `ExitPlanMode`, `Stop` |
+| green pip | finished, nothing asked (doesn't blink the bank button or wake idle) | `Stop` |
+| dim white pip | started, no prompt yet | `SessionStart` |
 
 Reopening a conversation from Claude Code's session list can give it a new session id; the
-new session takes over the old row (found by the old id inside its transcript). A row disappears on `SessionEnd`, after `[claude] stale_after` seconds without any hook (default
-2 h, for sessions that were killed), or when you tap it (any status but working).
+new session takes over the old pip (found by the old id inside its transcript). A pip disappears on `SessionEnd`, after `[claude] stale_after` seconds without any hook (default
+2 h, for sessions that were killed), or when you tap it (any status but working). Up to 8 sessions get a pip.
 
 ## Docs
 

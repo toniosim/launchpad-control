@@ -75,11 +75,12 @@ mode = "random"
 # Banks: the row of buttons just below the grid switches the whole grid between views.
 # Button 1 = main (everything above), button 2 = Claude Code (this section).
 #
-# Claude Code bank: one row per running Claude Code session, oldest at the top.
-#   orange comet = working, pulsing yellow = needs you (permission prompt, question, or
-#   its reply ends by asking you something), green = finished, nothing asked,
+# Claude Code bank: a pixel critter that walks while any session works, waves when a chat
+#   needs you (permission prompt, question, or its reply ends by asking you something)
+#   and stands still otherwise. Bottom row: one pip per session, oldest on the left:
+#   orange = working, blinking yellow = needs you, green = finished, nothing asked,
 #   dim white = started, no prompt yet.
-# Tap a row to clear it (not while working). The bank button turns orange while any
+# Tap a pip to clear it (not while working). The bank button turns orange while any
 # session works and blinks yellow when one needs you, whichever bank you're on.
 # Needs the hooks: scripts/install-claude-hooks.py (see README, "Claude Code").
 # `stale_after` (optional, seconds): forget a session that's been silent this long.

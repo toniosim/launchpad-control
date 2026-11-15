@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import math
 import queue
 import random
 import signal
@@ -13,7 +12,7 @@ from contextlib import ExitStack
 from pathlib import Path
 from typing import Callable, ContextManager, Protocol
 
-from . import config, grid, idle
+from . import config, grid, idle, mascot
 from .config import ConfigError, Layout
 from .device import Device
 from .events import (AudioChanged, ButtonChange, DiscordChanged, Event, MediaChanged,
@@ -40,15 +39,16 @@ BANK_BUTTONS = {101: MAIN, 102: CLAUDE}
 BANK_ACTIVE: grid.RGB = (50, 50, 50)
 BANK_INACTIVE: grid.RGB = (5, 5, 5)
 
-# Claude bank: one row per session, oldest at the top.
+# Claude bank: the mascot (see mascot.py) above one pip per session on the bottom row,
+# oldest on the left.
+PIP_ROW = 1
 CLAUDE_WORKING = grid.ORANGE
 CLAUDE_ASKING: grid.RGB = (127, 100, 0)   # yellow: waiting for you
 CLAUDE_DONE = grid.GREEN
 CLAUDE_READY: grid.RGB = (20, 20, 20)
-CLAUDE_FRAME_S = 0.1     # animation step on the Claude bank
-CLAUDE_BLINK_S = 0.5     # bank button blink (on, then off) while a session waits for you
-COMET_TAIL = (1.0, 0.35, 0.12)  # brightness of the working comet's head and tail
-PULSE_S = 1.0            # needs-input row: one dim-bright-dim cycle
+CLAUDE_FRAME_S = 0.25    # mascot animation step
+CLAUDE_BLINK_S = 0.5     # blink (on, then off) while a session waits for you; a multiple
+                         # of CLAUDE_FRAME_S, so the wave, pips and bank button stay in step
 
 
 class AudioControl(Protocol):
@@ -166,12 +166,12 @@ class App:
             self.bank = bank
 
     def _on_claude_press(self, idx: int) -> None:
-        """Tap a session's row to clear it (unless it's working; it comes back on its
+        """Tap a session's pip to clear it (unless it's working; it comes back on its
         next hook)."""
-        if not 1 <= idx % 10 <= 8:
+        if idx // 10 != PIP_ROW or not 1 <= idx % 10 <= 8:
             return
-        i = 8 - idx // 10
-        if 0 <= i < len(self.claude.items):
+        i = idx % 10 - 1
+        if i < len(self.claude.items):
             session = self.claude.items[i]
             if session.status != claude.WORKING:
                 self.claude = self.claude.dismiss(session.id)
@@ -300,30 +300,17 @@ class App:
         return frame
 
     def _render_claude(self) -> grid.Frame:
-        frame: grid.Frame = {}
-        t = self.clock()
-        tick = int(t / CLAUDE_FRAME_S)
-        for i, session in enumerate(self.claude.items[:8]):
-            row = 8 - i
-            st = session.status
-            if st == claude.WORKING:
-                # A comet sweeping left to right, with a short gap between passes.
-                head = (tick + 3 * i) % 11 + 1
-                for col in range(1, 9):
-                    k = head - col
-                    b = COMET_TAIL[k] if 0 <= k < len(COMET_TAIL) else 0.04
-                    frame[grid.idx(row, col)] = grid.scale(CLAUDE_WORKING, b)
-            elif st == claude.NEEDS_INPUT:
-                phase = (tick * CLAUDE_FRAME_S) % PULSE_S / PULSE_S
-                b = 0.1 + 0.9 * (0.5 - 0.5 * math.cos(2 * math.pi * phase))
-                for col in range(1, 9):
-                    frame[grid.idx(row, col)] = grid.scale(CLAUDE_ASKING, b)
-            elif st == claude.DONE:
-                frame[grid.idx(row, 1)] = CLAUDE_DONE
-                for col in range(2, 9):
-                    frame[grid.idx(row, col)] = grid.scale(CLAUDE_DONE, 0.06)
-            else:
-                frame[grid.idx(row, 1)] = CLAUDE_READY
+        tick = int(self.clock() / CLAUDE_FRAME_S)
+        sessions = self.claude
+        frame = mascot.render(working=sessions.any(claude.WORKING),
+                              asking=sessions.any(claude.NEEDS_INPUT),
+                              alone=not sessions.items, tick=tick)
+        blink_on = int(self.clock() / CLAUDE_BLINK_S) % 2 == 0  # same as the bank button
+        for i, session in enumerate(sessions.items[:8]):
+            color = {claude.WORKING: CLAUDE_WORKING, claude.DONE: CLAUDE_DONE,
+                     claude.NEEDS_INPUT: CLAUDE_ASKING if blink_on
+                     else grid.scale(CLAUDE_ASKING, 0.1)}.get(session.status, CLAUDE_READY)
+            frame[grid.idx(PIP_ROW, i + 1)] = color
         return frame
 
     def _render_main(self) -> grid.Frame:
