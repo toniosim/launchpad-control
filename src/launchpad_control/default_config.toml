@@ -60,9 +60,25 @@ color = "blue"
 
 # Idle mode: after `after` seconds without a pad press, the whole grid plays an
 # animation until you press anything (that press only wakes it, it doesn't act).
-# Modes: "life" (Conway's Game of Life; reseeds itself when it dies out or loops).
-# `interval` = seconds per frame. Remove this section to disable.
+# Modes: "life" (Conway's Game of Life; reseeds itself when it dies out or loops),
+#        "rain" (falling green streaks).
+# `mode` = "random" (a different pick from all modes each time), one mode, or a list
+# to pick from, e.g. ["life", "rain"]. `interval` (optional) = seconds per frame for
+# every mode; leave it out to let each mode use its own pace. Never starts while the
+# Claude bank is showing. Remove this section to disable.
 [idle]
 after = 300
-mode = "life"
-interval = 0.4
+mode = "random"
+
+
+# Banks: the row of buttons just below the grid switches the whole grid between views.
+# Button 1 = main (everything above), button 2 = Claude Code (this section).
+#
+# Claude Code bank: one row per running Claude Code session, oldest at the top.
+#   orange comet = working, pulsing yellow = waiting for you (permission or question),
+#   green = finished its turn, dim white = started, no prompt yet.
+# Tap a row to clear it (not while working). The bank button turns orange while any
+# session works and blinks yellow when one needs you, whichever bank you're on.
+# Needs the hooks: scripts/install-claude-hooks.py (see README, "Claude Code").
+# `stale_after` (optional, seconds): forget a session that's been silent this long.
+[claude]

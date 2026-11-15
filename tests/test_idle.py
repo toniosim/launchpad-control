@@ -7,7 +7,8 @@ from launchpad_control.app import App
 from launchpad_control.config import ConfigError
 from launchpad_control.events import AudioChanged, ButtonChange, PadPress, PadRelease
 from launchpad_control.fake_device import FakeDevice
-from launchpad_control.idle import LIFE_AGE_COLORS, TRAIL_BRIGHTNESS, Life
+from launchpad_control.idle import (LIFE_AGE_COLORS, MODES, RAIN_HEAD, TRAIL_BRIGHTNESS,
+                                    Drop, Life, Rain)
 from launchpad_control.integrations.pipewire import AudioState
 
 BLINKER = {(4, 3), (4, 4), (4, 5)}
@@ -111,11 +112,21 @@ def test_render_colours_by_age_and_trails():
 
 def test_config_idle_defaults():
     layout = config.parse({"idle": {"after": 60}})
-    assert (layout.idle.after, layout.idle.mode, layout.idle.interval) == (60, "life", 0.4)
+    assert (layout.idle.after, layout.idle.modes, layout.idle.interval) == \
+        (60, ("life", "rain"), None)
+
+
+@pytest.mark.parametrize("mode, modes", [
+    ("random", ("life", "rain")),
+    ("rain", ("rain",)),
+    (["rain", "life"], ("rain", "life")),
+])
+def test_config_idle_mode_forms(mode, modes):
+    assert config.parse({"idle": {"after": 60, "mode": mode}}).idle.modes == modes
 
 
 def test_default_config_has_idle():
-    assert config.load(None).idle.mode == "life"
+    assert config.load(None).idle.modes == ("life", "rain")
 
 
 @pytest.mark.parametrize("section", [
@@ -123,6 +134,9 @@ def test_default_config_has_idle():
     {"after": 0},
     {"after": "5m"},
     {"after": 60, "mode": "pong"},
+    {"after": 60, "mode": []},
+    {"after": 60, "mode": ["life", "pong"]},
+    {"after": 60, "mode": 3},
     {"after": 60, "interval": -1},
     {"after": 60, "speed": 2},
 ])
@@ -150,7 +164,7 @@ class Audio:
 
 
 LAYOUT = config.parse({"mic_mute": {"pad": [1, 8]},
-                       "idle": {"after": 60, "interval": 0.5}})
+                       "idle": {"after": 60, "mode": "life", "interval": 0.5}})
 
 
 def make_app(layout=LAYOUT):
@@ -260,3 +274,81 @@ def test_wake_press_during_animation_frame_is_not_a_volume_change():
     app.step()
     dev.emit(PadPress(grid.idx(8, 1), 100))
     assert A.calls == []
+
+
+def test_uses_each_modes_own_interval_without_config_interval():
+    layout = config.parse({"idle": {"after": 60, "mode": "rain"}})
+    app, _, _, clock = make_app(layout)
+    clock.t += 60
+    app.step()
+    assert isinstance(app.idle, Rain)
+    assert app.seconds_until_tick() == pytest.approx(Rain.interval)
+
+
+def test_picks_modes_from_the_pool():
+    layout = config.parse({"idle": {"after": 60}})
+    seen = set()
+    for seed in range(20):
+        clock, dev = Clock(), FakeDevice()
+        app = App(dev, Audio(), layout, clock=clock, rng=random.Random(seed))
+        clock.t += 60
+        app.step()
+        seen.add(app.idle.name)
+    assert seen == set(MODES)
+
+
+def test_config_change_to_other_mode_restarts():
+    app, _, _, clock = make_app()
+    clock.t += 60
+    app.step()
+    app.layout = config.parse({"mic_mute": {"pad": [1, 8]},
+                               "idle": {"after": 60, "mode": "rain"}})
+    app.step()  # stops life
+    app.step()  # starts rain (still past the timeout)
+    assert isinstance(app.idle, Rain)
+
+
+# ---- rain ----
+
+def test_rain_drop_falls_with_fading_trail():
+    rain = Rain(random.Random(0), spawn=0)
+    rain.drops = [Drop(col=3, row=5, length=3, period=1)]
+    frame = rain.render()
+    assert frame[grid.idx(5, 3)] == RAIN_HEAD
+    trail = [sum(frame[grid.idx(r, 3)]) for r in (6, 7, 8)]
+    assert trail == sorted(trail, reverse=True) and trail[-1] > 0
+    rain.step()
+    assert rain.drops[0].row == 4
+
+
+def test_rain_slow_drops_move_every_other_step():
+    rain = Rain(random.Random(0), spawn=0)
+    rain.drops = [Drop(col=1, row=8, length=2, period=2)]
+    rows = []
+    for _ in range(4):
+        rain.step()
+        rows.append(rain.drops[0].row)
+    assert rows == [7, 7, 6, 6]
+
+
+def test_rain_drop_leaves_once_its_tail_is_gone():
+    rain = Rain(random.Random(0), spawn=0)
+    rain.drops = [Drop(col=1, row=1, length=2, period=1)]
+    rain.step(), rain.step()
+    assert rain.drops            # tail still on row 1
+    rain.step()
+    assert rain.drops == [] and rain.render() == {}
+
+
+def test_rain_never_stacks_drops_in_one_column():
+    rain = Rain(random.Random(5), spawn=1.0)
+    for _ in range(200):
+        rain.step()
+        by_col = {}
+        for d in rain.drops:
+            by_col.setdefault(d.col, []).append(d)
+        for drops in by_col.values():
+            drops.sort(key=lambda d: d.row)
+            for lower, upper in zip(drops, drops[1:]):
+                assert upper.row > lower.row + lower.length  # no overlap
+    assert all(i // 10 in range(1, 9) and i % 10 in range(1, 9) for i in rain.render())

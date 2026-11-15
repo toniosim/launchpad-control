@@ -1,11 +1,12 @@
 """Idle animations ("screensavers") for the grid. Pure: they only produce frames.
 
-Each mode has `step()` (advance one frame) and `render() -> Frame`. The app decides
-when to start one and how often to step it.
+Each mode has `step()` (advance one frame), `render() -> Frame`, and a default
+`interval` (seconds per frame). The app decides when to start one and how often to step it.
 """
 from __future__ import annotations
 
 import random
+from dataclasses import dataclass
 from typing import Callable, Protocol
 
 from . import grid
@@ -16,6 +17,7 @@ Cell = tuple[int, int]  # (row, col), 1-8 like grid.idx
 
 class IdleMode(Protocol):
     name: str
+    interval: float
 
     def step(self) -> None: ...
     def render(self) -> Frame: ...
@@ -43,6 +45,7 @@ class Life:
     """
 
     name = "life"
+    interval = 0.4
 
     def __init__(self, rng: random.Random | None = None, *, size: int = 8,
                  density: float = 0.35, linger: int = 12, max_generations: int = 300,
@@ -117,6 +120,67 @@ class Life:
         return LIFE_AGE_COLORS[min(age, len(LIFE_AGE_COLORS) - 1)]
 
 
+RAIN_HEAD: RGB = (90, 127, 90)   # the leading pad of a drop, almost white
+RAIN_TRAIL: RGB = (0, 127, 10)
+
+
+@dataclass
+class Drop:
+    col: int
+    row: int     # head position; starts above the grid (9) and falls towards 1
+    length: int  # trail pads behind the head
+    period: int  # steps per row: 1 = fast, 2 = slow
+    wait: int = 0
+
+
+class Rain:
+    """Falling green streaks, Matrix style: a pale head with a fading trail.
+
+    Each column gets a new drop at random once the previous one has fully entered the
+    grid (with a gap), never faster than the one ahead, so drops never overlap.
+    """
+
+    name = "rain"
+    interval = 0.1
+
+    def __init__(self, rng: random.Random | None = None, *, spawn: float = 0.07) -> None:
+        self.rng = rng or random.Random()
+        self.spawn = spawn  # chance per step that a free column starts a drop
+        self.drops: list[Drop] = []
+
+    def step(self) -> None:
+        for d in self.drops:
+            if d.wait:
+                d.wait -= 1
+            else:
+                d.row -= 1
+                d.wait = d.period - 1
+        self.drops = [d for d in self.drops if d.row + d.length >= 1]
+        busy = {d.col for d in self.drops if d.row + d.length >= 8}  # no gap below the top yet
+        for col in range(1, 9):
+            if col not in busy and self.rng.random() < self.spawn:
+                # Never faster than a drop still falling ahead in this column: it would
+                # catch up and overlap.
+                ahead = max((d.period for d in self.drops if d.col == col), default=1)
+                period = max(ahead, self.rng.choice((1, 1, 2)))
+                self.drops.append(Drop(col, 9, self.rng.randint(2, 6), period))
+
+    def render(self) -> Frame:
+        frame: Frame = {}
+        for d in self.drops:
+            for k in range(d.length + 1):  # k = 0 is the head
+                row = d.row + k
+                if not 1 <= row <= 8:
+                    continue
+                rgb = RAIN_HEAD if k == 0 else grid.scale(
+                    RAIN_TRAIL, (1 - k / (d.length + 1)) ** 1.5)
+                i = grid.idx(row, d.col)
+                if sum(rgb) > sum(frame.get(i, grid.OFF)):
+                    frame[i] = rgb
+        return frame
+
+
 MODES: dict[str, Callable[[random.Random], IdleMode]] = {
     "life": lambda rng: Life(rng),
+    "rain": lambda rng: Rain(rng),
 }

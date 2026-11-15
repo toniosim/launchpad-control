@@ -82,8 +82,9 @@ def test_only_dim_placeholders_until_state_known():
     # each fader shows just its dim bottom pad; Discord pads show "not connected"
     discord_pads = {LAYOUT.discord.mute_pad, LAYOUT.discord.deafen_pad}
     media_pads = set(LAYOUT.media.pads())
+    bank_buttons = {101, 102}
     assert set(dev.leds) == ({grid.idx(1, f.col) for f in LAYOUT.faders()}
-                             | discord_pads | media_pads)
+                             | discord_pads | media_pads | bank_buttons)
     assert {dev.leds[p] for p in discord_pads} == {grid.DIM_GREY}
 
 

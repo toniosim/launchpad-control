@@ -71,10 +71,17 @@ class MediaLayout:
 
 @dataclass(frozen=True)
 class IdleLayout:
-    """Screensaver: after `after` seconds without a press, play `mode` on the whole grid."""
+    """Screensaver: after `after` seconds without a press, play one of `modes` (picked at
+    random each time) on the whole grid."""
     after: float
-    mode: str = "life"
-    interval: float = 0.4  # seconds per animation frame
+    modes: tuple[str, ...] = tuple(idle.MODES)
+    interval: float | None = None  # seconds per frame; None = each mode's own pace
+
+
+@dataclass(frozen=True)
+class ClaudeLayout:
+    """The Claude Code bank: one row per session, fed by Claude Code hooks."""
+    stale_after: float = 2 * 3600  # forget a session silent this long (killed, no SessionEnd)
 
 
 @dataclass(frozen=True)
@@ -86,6 +93,7 @@ class Layout:
     discord: DiscordLayout | None = None
     media: MediaLayout | None = None
     idle: IdleLayout | None = None
+    claude: ClaudeLayout | None = None
 
     def faders(self) -> list[Fader]:
         return (([self.master] if self.master else []) + [a.fader for a in self.apps]
@@ -135,7 +143,7 @@ def load(path: Path | None) -> Layout:
 
 def parse(data: dict[str, Any]) -> Layout:
     _no_unknown_keys(data, {"mic_mute", "master", "apps", "active_app", "discord", "media",
-                      "idle"},
+                      "idle", "claude"},
                      "top level")
 
     mic_pad = None
@@ -186,7 +194,14 @@ def parse(data: dict[str, Any]) -> Layout:
     if "idle" in data:
         idle_layout = _idle(_table(data["idle"], "[idle]"))
 
-    layout = Layout(mic_pad, master, tuple(apps), active, discord, media, idle_layout)
+    claude = None
+    if "claude" in data:
+        section = _table(data["claude"], "[claude]")
+        _no_unknown_keys(section, {"stale_after"}, "[claude]")
+        claude = ClaudeLayout(_seconds(section.get("stale_after", ClaudeLayout.stale_after),
+                                       "[claude] stale_after"))
+
+    layout = Layout(mic_pad, master, tuple(apps), active, discord, media, idle_layout, claude)
     _check_overlaps(layout)
     return layout
 
@@ -229,11 +244,15 @@ def _idle(section: dict[str, Any]) -> IdleLayout:
     where = "[idle]"
     _no_unknown_keys(section, {"after", "mode", "interval"}, where)
     after = _seconds(_required(section, "after", where), f"{where} after")
-    mode = section.get("mode", IdleLayout.mode)
-    if mode not in idle.MODES:
-        raise ConfigError(f"{where}: unknown mode {mode!r} (known: {', '.join(idle.MODES)})")
-    interval = _seconds(section.get("interval", IdleLayout.interval), f"{where} interval")
-    return IdleLayout(after, mode, interval)
+    mode = section.get("mode", "random")
+    modes = tuple(idle.MODES) if mode == "random" else (mode,) if isinstance(mode, str) else mode
+    if (not isinstance(modes, (list, tuple)) or not modes
+            or not all(isinstance(m, str) and m in idle.MODES for m in modes)):
+        raise ConfigError(f"{where}: mode must be \"random\", a mode name or a list of them "
+                          f"(known: {', '.join(idle.MODES)}), got {mode!r}")
+    interval = (_seconds(section["interval"], f"{where} interval")
+                if "interval" in section else None)
+    return IdleLayout(after, tuple(modes), interval)
 
 
 def _seconds(value: Any, where: str) -> float:

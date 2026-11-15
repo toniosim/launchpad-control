@@ -24,7 +24,7 @@ Original goals from Tonio are marked ⭐. Rough priority: **P1** = build first, 
 ## Status display (LEDs as a dashboard)
 - **P2 Home server grid**: one pad per container/service, green = healthy, red = down; hold a pad to restart the service
 - **P2 Home Assistant**: lights and scenes, pad color = actual light color
-- **P2 Claude Code / agent stack alerts**: a pad pulses when a session needs approval or finishes; tap to focus that terminal
+- **P2 Claude Code / agent stack alerts**: ✅ Claude bank (one row per session, via hooks + Unix socket; `integrations/claude.py`). Still open: tap to focus that terminal (hard on Wayland/COSMIC), show which project a row is (e.g. colour per cwd), a sound or main-bank pad when a session needs you
 - **P2 Test/CI status**: a row of pads shows pipeline pass/fail; tap to run a local test suite
 - **P3 Notifications**: meeting countdown, Pomodoro timer that drains the grid
 
@@ -35,12 +35,12 @@ Original goals from Tonio are marked ⭐. Rough priority: **P1** = build first, 
 - **P3 Clipboard/snippet bank**: frequently used strings, commands, test data
 
 ## Just for fun
-- **P3 Ambient/idle mode**: ✅ Conway's Game of Life (`idle.py`, `[idle] mode = "life"`). Still to do: audio visualizer from system output, clock. New modes go in `idle.MODES`
+- **P3 Ambient/idle mode**: ✅ Conway's Game of Life, ✅ Matrix rain (`idle.py`; `[idle] mode` = "random", a name or a list, picked at random each time). Still to do: audio visualizer from system output, clock, a button to start idle by hand. New modes go in `idle.MODES` (with a class `interval`)
 - **P3 V-Sonas on the grid**: pet mood/hunger as colors, tap to feed, tiny 8×8 minigames
 
 ## Infrastructure (not features, but needed)
 - Edge-button CC map (`docs/BUTTON_MAP.md`)
-- Page/mode system on edge buttons
+- ~~Page/mode system on edge buttons~~ done: banks on the buttons below the grid (`app.BANK_BUTTONS`). Pages are still methods on `App`; split into classes once there's a third bank
 - ~~Config file for mappings~~ done: TOML, `~/.config/launchpad-control/config.toml`, live reload
 - Frame buffer + diffed batched SysEx
 - ~~Hot-plug reconnect~~ done: `app.serve` waits for the device, repaints from carried state on replug

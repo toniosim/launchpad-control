@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .integrations.claude import HookEvent
 from .integrations.discord import DiscordState
 from .integrations.media import MediaState
 from .integrations.pipewire import AudioState
@@ -50,5 +51,6 @@ class MediaChanged:
     state: MediaState
 
 
+# HookEvent: a Claude Code hook fired (integrations/claude.py)
 Event = (PadPress | PadRelease | PadPressure | ButtonChange | AudioChanged | DiscordChanged
-         | MediaChanged)
+         | MediaChanged | HookEvent)

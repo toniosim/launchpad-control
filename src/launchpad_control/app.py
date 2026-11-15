@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import queue
 import random
 import signal
@@ -17,6 +18,8 @@ from .config import ConfigError, Layout
 from .device import Device
 from .events import (AudioChanged, ButtonChange, DiscordChanged, Event, MediaChanged,
                      PadPress)
+from .integrations import claude
+from .integrations.claude import HookEvent, Sessions
 from .integrations.discord import DiscordState
 from .integrations.media import MediaState
 from .integrations.pipewire import AudioState
@@ -29,6 +32,23 @@ DEVICE_POLL_S = 2.0  # how often to check the Launchpad is still (or again) plug
 WAKE_GAP_S = 3.0  # more suspended time than this between two checks means the PC slept
 WAKE_SETTLE_S = 3.0  # after waking, give the USB bus and the pad this long before reopening
 STUCK_GRACE_S = 6.0  # on the USB bus but without MIDI ports for this long = stuck
+
+# Banks: whole-grid views, picked with the row of buttons just below the grid.
+# Their CC numbers double as LED indices. (Unverified: see docs/BUTTON_MAP.md.)
+MAIN, CLAUDE = "main", "claude"
+BANK_BUTTONS = {101: MAIN, 102: CLAUDE}
+BANK_ACTIVE: grid.RGB = (50, 50, 50)
+BANK_INACTIVE: grid.RGB = (5, 5, 5)
+
+# Claude bank: one row per session, oldest at the top.
+CLAUDE_WORKING = grid.ORANGE
+CLAUDE_ASKING: grid.RGB = (127, 100, 0)   # yellow: waiting for you
+CLAUDE_DONE = grid.GREEN
+CLAUDE_READY: grid.RGB = (20, 20, 20)
+CLAUDE_FRAME_S = 0.1     # animation step on the Claude bank
+CLAUDE_BLINK_S = 0.5     # bank button blink (on, then off) while a session waits for you
+COMET_TAIL = (1.0, 0.35, 0.12)  # brightness of the working comet's head and tail
+PULSE_S = 1.0            # needs-input row: one dim-bright-dim cycle
 
 
 class AudioControl(Protocol):
@@ -64,6 +84,8 @@ class App:
         self.state = AudioState()
         self.discord_state = DiscordState()
         self.media_state = MediaState()
+        self.claude = Sessions()
+        self.bank = MAIN
         self.clock = clock
         self.rng = rng or random.Random()
         self.idle: idle.IdleMode | None = None  # the running idle animation, if any
@@ -85,7 +107,20 @@ class App:
                 return  # the waking press is swallowed, so it can't change a volume
         # Presses only act on the system. LEDs change when PipeWire reports the new state.
         if isinstance(event, PadPress):
-            self._on_press(event.idx)
+            if self.bank == CLAUDE:
+                self._on_claude_press(event.idx)
+            else:
+                self._on_press(event.idx)
+        elif isinstance(event, ButtonChange):
+            if event.value and event.cc in BANK_BUTTONS:
+                self._switch_bank(BANK_BUTTONS[event.cc])
+        elif isinstance(event, HookEvent):
+            before = self.claude.get(event.session_id)
+            self.claude = self.claude.apply(event, self.clock())
+            after = self.claude.get(event.session_id)
+            if (before and before.status) != (after and after.status):
+                log.info("Claude session in %s: %s", event.cwd or event.session_id[:8],
+                         after.status if after else "ended")
         elif isinstance(event, AudioChanged):
             if event.state.active_app != self.state.active_app and self.layout.active_app:
                 log.info("Active-app fader now controls: %s", event.state.active_app or "nothing")
@@ -96,6 +131,28 @@ class App:
             self.discord_state = event.state
         elif isinstance(event, MediaChanged):
             self.media_state = event.state
+
+    def banks(self) -> list[str]:
+        return [MAIN] + ([CLAUDE] if self.layout.claude else [])
+
+    def _switch_bank(self, bank: str) -> None:
+        if bank not in self.banks():
+            log.info("The %s bank isn't enabled (add [%s] to the config)", bank, bank)
+            return
+        if bank != self.bank:
+            log.debug("Bank: %s", bank)
+            self.bank = bank
+
+    def _on_claude_press(self, idx: int) -> None:
+        """Tap a session's row to clear it (unless it's working; it comes back on its
+        next hook)."""
+        if not 1 <= idx % 10 <= 8:
+            return
+        i = 8 - idx // 10
+        if 0 <= i < len(self.claude.items):
+            session = self.claude.items[i]
+            if session.status != claude.WORKING:
+                self.claude = self.claude.dismiss(session.id)
 
     def _on_press(self, idx: int) -> None:
         layout = self.layout
@@ -139,35 +196,115 @@ class App:
             self.audio.set_active_volume(active.fader.level_for_press(idx, current))
 
     def tick(self) -> None:
-        """Start, advance or stop the idle animation as time passes."""
-        cfg = self.layout.idle
-        if cfg is None:
-            self.idle = None
-            return
+        """Start, advance or stop the idle animation as time passes; forget stale sessions."""
         now = self.clock()
-        if self.idle is not None and self.idle.name != cfg.mode:
-            self.idle = None  # mode changed in the config: start the new one below
+        if self.layout.claude:
+            self.claude = self.claude.prune(now, self.layout.claude.stale_after)
+        if self.bank not in self.banks():
+            self.bank = MAIN  # its section was removed from the config
+        cfg = self.layout.idle
+        if cfg is None or self.bank == CLAUDE:  # the Claude bank is for watching: no idling
+            self.idle = None
+            if self.bank == CLAUDE:
+                self._last_activity = now  # leaving the bank starts the idle timer afresh
+            return
+        if self.idle is not None and self.idle.name not in cfg.modes:
+            self.idle = None  # mode changed in the config: start a new one below
         if self.idle is None:
             if now - self._last_activity >= cfg.after:
-                log.debug("Idle for %.0fs: starting %s", now - self._last_activity, cfg.mode)
-                self.idle = idle.MODES[cfg.mode](self.rng)
-                self._next_frame = now + cfg.interval
+                self.idle = idle.MODES[self.rng.choice(cfg.modes)](self.rng)
+                log.debug("Idle for %.0fs: starting %s", now - self._last_activity,
+                          self.idle.name)
+                self._next_frame = now + self._idle_interval()
         elif now >= self._next_frame:
             self.idle.step()
             # Keep a steady pace, but don't try to catch up after a stall.
-            self._next_frame = max(self._next_frame + cfg.interval, now)
+            self._next_frame = max(self._next_frame + self._idle_interval(), now)
+
+    def _idle_interval(self) -> float:
+        cfg = self.layout.idle
+        assert self.idle is not None
+        return (cfg.interval if cfg and cfg.interval else None) or self.idle.interval
 
     def seconds_until_tick(self) -> float:
-        """How long the main loop may block before tick() has something to do."""
+        """How long the main loop may block before tick() or the picture has something to do."""
+        now = self.clock()
+        wait = float("inf")
         cfg = self.layout.idle
-        if cfg is None:
-            return float("inf")
-        due = self._next_frame if self.idle else self._last_activity + cfg.after
-        return max(0.0, due - self.clock())
+        if cfg is not None and self.bank != CLAUDE:
+            due = self._next_frame if self.idle else self._last_activity + cfg.after
+            wait = max(0.0, due - now)
+        step = self._animation_step()
+        if step:
+            # Just past the next frame boundary, computed the way render() quantizes time.
+            wait = min(wait, max(0.0, (int(now / step) + 1) * step - now) + 1e-3)
+        return wait
+
+    def _animation_step(self) -> float | None:
+        """Seconds per frame of whatever Claude animation is visible, if any."""
+        if not self.layout.claude:
+            return None
+        if self.bank == CLAUDE and (self.claude.any(claude.WORKING)
+                                    or self.claude.any(claude.NEEDS_INPUT)):
+            return CLAUDE_FRAME_S
+        if self.claude.any(claude.NEEDS_INPUT):
+            return CLAUDE_BLINK_S
+        return None
 
     def render(self) -> grid.Frame:
-        if self.idle is not None:
-            return self.idle.render()
+        frame = (self.idle.render() if self.idle is not None
+                 else self._render_claude() if self.bank == CLAUDE
+                 else self._render_main())
+        frame.update(self._render_bank_buttons())
+        return frame
+
+    def _render_bank_buttons(self) -> grid.Frame:
+        frame: grid.Frame = {}
+        banks = self.banks()
+        if len(banks) < 2:
+            return frame  # nothing to switch to
+        for cc, bank in BANK_BUTTONS.items():
+            if bank not in banks:
+                continue
+            active = bank == self.bank
+            color = BANK_ACTIVE if active else BANK_INACTIVE
+            if bank == CLAUDE:
+                if self.claude.any(claude.NEEDS_INPUT):
+                    blink_on = int(self.clock() / CLAUDE_BLINK_S) % 2 == 0
+                    color = CLAUDE_ASKING if blink_on else grid.scale(CLAUDE_ASKING, 0.1)
+                elif self.claude.any(claude.WORKING):
+                    color = CLAUDE_WORKING if active else grid.scale(CLAUDE_WORKING, 0.35)
+            frame[cc] = color
+        return frame
+
+    def _render_claude(self) -> grid.Frame:
+        frame: grid.Frame = {}
+        t = self.clock()
+        tick = int(t / CLAUDE_FRAME_S)
+        for i, session in enumerate(self.claude.items[:8]):
+            row = 8 - i
+            st = session.status
+            if st == claude.WORKING:
+                # A comet sweeping left to right, with a short gap between passes.
+                head = (tick + 3 * i) % 11 + 1
+                for col in range(1, 9):
+                    k = head - col
+                    b = COMET_TAIL[k] if 0 <= k < len(COMET_TAIL) else 0.04
+                    frame[grid.idx(row, col)] = grid.scale(CLAUDE_WORKING, b)
+            elif st == claude.NEEDS_INPUT:
+                phase = (tick * CLAUDE_FRAME_S) % PULSE_S / PULSE_S
+                b = 0.1 + 0.9 * (0.5 - 0.5 * math.cos(2 * math.pi * phase))
+                for col in range(1, 9):
+                    frame[grid.idx(row, col)] = grid.scale(CLAUDE_ASKING, b)
+            elif st == claude.DONE:
+                frame[grid.idx(row, 1)] = CLAUDE_DONE
+                for col in range(2, 9):
+                    frame[grid.idx(row, col)] = grid.scale(CLAUDE_DONE, 0.06)
+            else:
+                frame[grid.idx(row, 1)] = CLAUDE_READY
+        return frame
+
+    def _render_main(self) -> grid.Frame:
         s, layout = self.state, self.layout
         frame: grid.Frame = {}
         if layout.master:
@@ -241,6 +378,7 @@ class ConfigWatcher:
 
 def run(config_path: Path | None) -> None:
     from .device import LaunchpadDevice, launchpad_on_usb_bus, launchpad_present
+    from .integrations.claude import ClaudeListener
     from .integrations.discord import Discord
     from .integrations.media import Media
     from .integrations.pipewire import PipeWire
@@ -268,6 +406,12 @@ def run(config_path: Path | None) -> None:
     if discord:
         discord.watch(lambda s: events.put(DiscordChanged(s)))
     media.watch(lambda s: events.put(MediaChanged(s)))
+    hooks: ClaudeListener | None = ClaudeListener()
+    try:
+        hooks.watch(events.put)  # always on, so adding [claude] to the config works live
+    except OSError as e:
+        log.warning("Can't listen for Claude Code hooks on %s: %s", hooks.path, e)
+        hooks = None
     log.info("Running. Ctrl+C to quit.")
     try:
         serve(watcher, layout, audio, events, LaunchpadDevice, launchpad_present, discord,
@@ -277,6 +421,8 @@ def run(config_path: Path | None) -> None:
     finally:
         audio.stop()
         media.stop()
+        if hooks:
+            hooks.stop()
         if discord:
             discord.stop()
 
@@ -387,7 +533,7 @@ def _wait_for_device(events: "queue.Queue[Event]", app: App) -> None:
 
 def _track_state(app: App, event: Event | None) -> None:
     """Apply state updates only; presses and buttons are meaningless without a live device."""
-    if isinstance(event, (AudioChanged, DiscordChanged, MediaChanged)):
+    if isinstance(event, (AudioChanged, DiscordChanged, MediaChanged, HookEvent)):
         app.handle(event)
 
 
