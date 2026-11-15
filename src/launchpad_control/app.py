@@ -43,7 +43,6 @@ BANK_INACTIVE: grid.RGB = (5, 5, 5)
 # Claude bank: one row per session, oldest at the top.
 CLAUDE_WORKING = grid.ORANGE
 CLAUDE_ASKING: grid.RGB = (127, 100, 0)   # yellow: waiting for you
-CLAUDE_DONE = grid.GREEN
 CLAUDE_READY: grid.RGB = (20, 20, 20)
 CLAUDE_FRAME_S = 0.1     # animation step on the Claude bank
 CLAUDE_BLINK_S = 0.5     # bank button blink (on, then off) while a session waits for you
@@ -102,8 +101,7 @@ class App:
         if isinstance(event, PadPress) or (isinstance(event, ButtonChange) and event.value):
             self._last_activity = self.clock()
             if self.idle is not None:
-                log.debug("Waking from idle mode")
-                self.idle = None
+                self._wake()
                 return  # the waking press is swallowed, so it can't change a volume
         # Presses only act on the system. LEDs change when PipeWire reports the new state.
         if isinstance(event, PadPress):
@@ -121,6 +119,8 @@ class App:
             if (before and before.status) != (after and after.status):
                 log.info("Claude session in %s: %s", event.cwd or event.session_id[:8],
                          after.status if after else "ended")
+                if self.bank == CLAUDE and after and after.status != claude.READY:
+                    self._wake()  # something to look at: show the bank again
         elif isinstance(event, AudioChanged):
             if event.state.active_app != self.state.active_app and self.layout.active_app:
                 log.info("Active-app fader now controls: %s", event.state.active_app or "nothing")
@@ -131,6 +131,16 @@ class App:
             self.discord_state = event.state
         elif isinstance(event, MediaChanged):
             self.media_state = event.state
+
+    def _wake(self) -> None:
+        if self.idle is not None:
+            log.debug("Waking from idle mode")
+        self.idle = None
+        self._last_activity = self.clock()
+
+    def _idle_blocked(self) -> bool:
+        """On the Claude bank, a working session means you're watching it: no idling."""
+        return self.bank == CLAUDE and self.claude.any(claude.WORKING)
 
     def banks(self) -> list[str]:
         return [MAIN] + ([CLAUDE] if self.layout.claude else [])
@@ -203,10 +213,10 @@ class App:
         if self.bank not in self.banks():
             self.bank = MAIN  # its section was removed from the config
         cfg = self.layout.idle
-        if cfg is None or self.bank == CLAUDE:  # the Claude bank is for watching: no idling
+        if cfg is None or self._idle_blocked():
             self.idle = None
-            if self.bank == CLAUDE:
-                self._last_activity = now  # leaving the bank starts the idle timer afresh
+            if cfg is not None:
+                self._last_activity = now  # the idle timer starts once the work stops
             return
         if self.idle is not None and self.idle.name not in cfg.modes:
             self.idle = None  # mode changed in the config: start a new one below
@@ -231,7 +241,7 @@ class App:
         now = self.clock()
         wait = float("inf")
         cfg = self.layout.idle
-        if cfg is not None and self.bank != CLAUDE:
+        if cfg is not None and not self._idle_blocked():
             due = self._next_frame if self.idle else self._last_activity + cfg.after
             wait = max(0.0, due - now)
         step = self._animation_step()
@@ -296,10 +306,6 @@ class App:
                 b = 0.1 + 0.9 * (0.5 - 0.5 * math.cos(2 * math.pi * phase))
                 for col in range(1, 9):
                     frame[grid.idx(row, col)] = grid.scale(CLAUDE_ASKING, b)
-            elif st == claude.DONE:
-                frame[grid.idx(row, 1)] = CLAUDE_DONE
-                for col in range(2, 9):
-                    frame[grid.idx(row, col)] = grid.scale(CLAUDE_DONE, 0.06)
             else:
                 frame[grid.idx(row, 1)] = CLAUDE_READY
         return frame

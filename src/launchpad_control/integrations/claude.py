@@ -3,7 +3,8 @@
 Each hook runs `scripts/claude_hook.py`, which forwards a few fields of the hook's JSON
 as one datagram to a Unix socket in $XDG_RUNTIME_DIR. `ClaudeListener` receives them
 (event driven: one thread blocked in recv, no polling) and `Sessions` turns them into a
-status per session: ready, working, needs input, done.
+status per session: ready, working, or needs input (Claude Code's own term for "your
+turn": a permission prompt, a question, or a finished turn waiting for your reply).
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from typing import Callable
 
 log = logging.getLogger(__name__)
 
-READY, WORKING, NEEDS_INPUT, DONE = "ready", "working", "needs_input", "done"
+READY, WORKING, NEEDS_INPUT = "ready", "working", "needs_input"
 
 # Tools that stop and wait for the user without a permission prompt.
 ASKING_TOOLS = {"AskUserQuestion", "ExitPlanMode"}
@@ -88,7 +89,7 @@ def status_after(event: HookEvent, current: str | None) -> str | None:
             return NEEDS_INPUT
         return current or READY
     if e == "Stop":
-        return DONE
+        return NEEDS_INPUT  # finished its turn: waiting for your reply
     return current or READY  # SubagentStop, PreCompact, anything newer: no change
 
 

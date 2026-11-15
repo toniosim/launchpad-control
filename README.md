@@ -12,13 +12,13 @@ Turns the 8×8 RGB pad grid into a control surface for the desktop: per-app volu
 - ✅ **Active-app fader** (column 4, cyan): controls whatever else is playing (e.g. a game): the newest audio stream not claimed by another fader, skipping notification sounds, paused streams and an ignore list. The log says which app it's controlling.
 - ✅ **Discord mute / deafen** (pads 28 and 38, below mic mute): red = muted/deafened, dim blurple = live, dim grey = Discord not running. Follows changes made in Discord too. One-time setup below.
 - ✅ **Media controls** (bottom row, pads 16 / 17 / 18, blue): previous, play/pause, next for the active player via `playerctl` (MPRIS). The LEDs follow the real player state: all three blue while a player exists, play/pause dims while paused, all grey when no player is running (event driven via `playerctl --follow status`, no polling). With several players running, `playerctl` picks one; `playerctld` makes it the most recently active. Configure under `[media]`.
-- ✅ **Idle mode**: after 5 minutes without a press, the grid plays an animation picked at random: Conway's Game of Life (8×8 torus, colour = cell age, reseeds when it dies out or loops) or Matrix-style rain. Any press wakes it and does nothing else. Never starts on the Claude bank. Set `[idle] after`/`mode`/`interval` in the config, or remove the section to disable.
+- ✅ **Idle mode**: after 5 minutes without a press, the grid plays an animation picked at random: Conway's Game of Life (8×8 torus, colour = cell age, reseeds when it dies out or loops) or Matrix-style rain. Any press wakes it and does nothing else. On the Claude bank it waits while a session is working, and wakes when a session starts working or needs you. Set `[idle] after`/`mode`/`interval` in the config, or remove the section to disable.
 - ✅ **Banks**: the row of buttons just below the grid switches the whole grid between views. Button 1 = main (everything above), button 2 = Claude Code. The lit button is the active bank. Only shown when more than one bank is enabled.
-- ✅ **Claude Code bank**: one row per running Claude Code session (oldest on top), fed by Claude Code hooks: orange comet = working, pulsing yellow = waiting for you (permission prompt or question), green = finished its turn. The bank button turns orange while any session works and blinks yellow when one needs you, from any bank. Setup below.
+- ✅ **Claude Code bank**: one row per running Claude Code session (oldest on top), fed by Claude Code hooks: orange comet = working, pulsing yellow = needs you (finished its turn, permission prompt or question; the same thing Claude Code's session list calls "needs input"). The bank button turns orange while any session works and blinks yellow when one needs you, from any bank. Setup below.
 - All LEDs follow the real PipeWire state, including changes made elsewhere (keyboard, panel, pavucontrol).
 - ✅ **Config file**: layout, colours and app matching live in TOML (see below), reloaded live.
 - ✅ **Runs in the background** as a systemd user service, survives unplug/replug, one-command updates (see below).
-- ⏭️ Next: confirm the bank buttons' CC numbers on the hardware (`docs/BUTTON_MAP.md`), map the other edge buttons.
+- ⏭️ Next: map the other edge buttons (`docs/BUTTON_MAP.md`).
 
 ## Quick start
 
@@ -121,14 +121,13 @@ scripts/install-claude-hooks.py --uninstall  # removes them again
 ```
 
 Running it again doesn't duplicate anything, and your other hooks are kept. New Claude Code
-sessions pick the hooks up. Enable the bank with a `[claude]` section in the config (the
+sessions pick the hooks up (already-running ones did too, in testing). Enable the bank with a `[claude]` section in the config (the
 packaged default has one).
 
 | Row looks like | Meaning | Hooks |
 |---|---|---|
 | orange comet sweeping across | working | `UserPromptSubmit`, `PostToolUse` |
-| whole row pulsing yellow | waiting for you | `PermissionRequest`, `Notification` (permission), `PreToolUse` for `AskUserQuestion` / `ExitPlanMode` |
-| green first pad, dim green rest | finished its turn | `Stop` |
+| whole row pulsing yellow | needs you: finished its turn, permission prompt or question | `Stop`, `PermissionRequest`, `Notification` (permission), `PreToolUse` for `AskUserQuestion` / `ExitPlanMode` |
 | dim white first pad | started, no prompt yet | `SessionStart` |
 
 A row disappears on `SessionEnd`, after `[claude] stale_after` seconds without any hook (default

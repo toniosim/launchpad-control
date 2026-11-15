@@ -10,7 +10,7 @@ import pytest
 
 from launchpad_control import config, grid
 from launchpad_control.app import (BANK_ACTIVE, BANK_INACTIVE, CLAUDE_ASKING, CLAUDE_BLINK_S,
-                                   CLAUDE_DONE, CLAUDE_FRAME_S, CLAUDE_WORKING, App)
+                                   CLAUDE_FRAME_S, CLAUDE_WORKING, App)
 from launchpad_control.config import ConfigError
 from launchpad_control.events import AudioChanged, ButtonChange
 from launchpad_control.fake_device import FakeDevice
@@ -44,7 +44,7 @@ def test_parse_hook_rejects_garbage(data):
 @pytest.mark.parametrize("event, current, expected", [
     (hook("SessionStart"), None, claude.READY),
     (hook("SessionStart"), claude.WORKING, claude.WORKING),  # auto-compact mid-task
-    (hook("UserPromptSubmit"), claude.DONE, claude.WORKING),
+    (hook("UserPromptSubmit"), claude.NEEDS_INPUT, claude.WORKING),
     (hook("PreToolUse", tool="Bash"), claude.WORKING, claude.WORKING),
     (hook("PreToolUse", tool="AskUserQuestion"), claude.WORKING, claude.NEEDS_INPUT),
     (hook("PreToolUse", tool="ExitPlanMode"), claude.WORKING, claude.NEEDS_INPUT),
@@ -52,14 +52,14 @@ def test_parse_hook_rejects_garbage(data):
     (hook("PostToolUse", tool="Bash"), claude.NEEDS_INPUT, claude.WORKING),
     (hook("Notification", notification="permission_prompt"), claude.WORKING,
      claude.NEEDS_INPUT),
-    (hook("Notification", notification="idle_prompt"), claude.DONE, claude.DONE),
+    (hook("Notification", notification="idle_prompt"), claude.NEEDS_INPUT, claude.NEEDS_INPUT),
     (hook("Notification", message="Claude needs your permission to use Bash"),
      claude.WORKING, claude.NEEDS_INPUT),
-    (hook("Notification", message="Claude is waiting for your input"), claude.DONE,
-     claude.DONE),
-    (hook("Stop"), claude.WORKING, claude.DONE),
+    (hook("Notification", message="Claude is waiting for your input"), claude.READY,
+     claude.READY),
+    (hook("Stop"), claude.WORKING, claude.NEEDS_INPUT),
     (hook("SubagentStop"), claude.WORKING, claude.WORKING),
-    (hook("SessionEnd"), claude.DONE, None),
+    (hook("SessionEnd"), claude.NEEDS_INPUT, None),
 ])
 def test_status_after(event, current, expected):
     assert status_after(event, current) == expected
@@ -225,12 +225,14 @@ def test_sessions_render_as_rows():
     dev.emit(hook("UserPromptSubmit", "a"))
     dev.emit(hook("Stop", "b"))
     dev.emit(hook("PermissionRequest", "c"))
-    top, second, third = row(dev, 8), row(dev, 7), row(dev, 6)
+    dev.emit(hook("SessionStart", "d"))
+    top, second, third, fourth = row(dev, 8), row(dev, 7), row(dev, 6), row(dev, 5)
     assert CLAUDE_WORKING in top  # the comet's head
-    assert second[0] == CLAUDE_DONE and all(p == grid.scale(CLAUDE_DONE, 0.06)
-                                            for p in second[1:])
-    assert len(set(third)) == 1 and third[0] is not None  # whole row, one pulse level
-    assert row(dev, 5) == [None] * 8
+    for r in (second, third):  # finished turn and permission prompt look the same
+        assert len(set(r)) == 1 and r[0] is not None  # whole row, one pulse level
+        assert r[0][1] > r[0][2]  # yellow-ish
+    assert fourth[0] is not None and fourth[1:] == [None] * 7
+    assert row(dev, 4) == [None] * 8
 
 
 def test_working_comet_moves_with_time():
@@ -247,10 +249,10 @@ def test_working_comet_moves_with_time():
 
 def test_no_animation_wakeups_when_nothing_moves():
     app, dev, _, clock = make_app(config.parse({"claude": {}}))  # no idle either
-    dev.emit(hook("Stop", "a"))
+    dev.emit(hook("SessionStart", "a"))
     assert app.seconds_until_tick() == float("inf")
     to_claude(dev)
-    assert app.seconds_until_tick() == float("inf")  # a finished session is static
+    assert app.seconds_until_tick() == float("inf")  # a ready session is static
 
 
 def test_bank_button_blinks_while_a_session_needs_input():
@@ -277,18 +279,54 @@ def test_tap_clears_finished_rows_but_not_working_ones():
     assert len(app.claude.items) == 1
 
 
-def test_no_idle_on_the_claude_bank():
+def test_no_idle_on_the_claude_bank_while_a_session_works():
     app, dev, _, clock = make_app()
     to_claude(dev)
-    clock.t += 10_000
+    dev.emit(hook("UserPromptSubmit", "a"))
+    clock.t += 1_000
     app.step()
     assert app.idle is None
-    dev.emit(ButtonChange(101, 127))  # back to main: the idle timer starts afresh
+    dev.emit(hook("Stop", "a"))  # work stopped: the idle timer starts now
     clock.t += 59
     app.step()
     assert app.idle is None
     clock.t += 1
     app.step()
+    assert app.idle is not None
+
+
+def test_idles_on_the_claude_bank_when_nothing_works():
+    app, dev, _, clock = make_app()
+    to_claude(dev)
+    dev.emit(hook("Stop", "a"))
+    clock.t += 60
+    app.step()
+    assert app.idle is not None
+    assert dev.leds[102] in (CLAUDE_ASKING, grid.scale(CLAUDE_ASKING, 0.1))  # still visible
+
+
+@pytest.mark.parametrize("event", ["UserPromptSubmit", "PermissionRequest"])
+def test_session_needing_attention_wakes_idle_on_the_claude_bank(event):
+    app, dev, _, clock = make_app()
+    to_claude(dev)
+    dev.emit(hook("Stop", "a"))
+    clock.t += 60
+    app.step()
+    dev.emit(hook("UserPromptSubmit", "a"))  # the first turn ends below
+    dev.emit(hook("Stop", "a"))
+    clock.t += 60
+    app.step()
+    assert app.idle is not None
+    dev.emit(hook(event, "b"))
+    assert app.idle is None
+
+
+def test_claude_events_dont_wake_idle_on_the_main_bank():
+    app, dev, _, clock = make_app()
+    clock.t += 60
+    app.step()
+    dev.emit(hook("UserPromptSubmit", "a"))
+    dev.emit(hook("Stop", "a"))
     assert app.idle is not None
 
 
